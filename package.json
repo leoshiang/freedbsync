@@ -1,0 +1,25 @@
+{
+  "name": "db-sync",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "sync": "node index.js",
+    "sync:clean": "node index.js --clean",
+    "preview": "node index.js --dry-run",
+    "preview:clean": "node index.js --dry-run --clean",
+    "debug": "node index.js --debug",
+    "debug:clean": "node index.js --debug --clean"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "graphlib": "^2.1.8",
+    "minimist": "^1.2.8",
+    "mssql": "^11.0.1"
+  }
+}

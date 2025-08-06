@@ -1,0 +1,9 @@
+/node_modules
+/.idea
+/out.sql
+/data.sql
+/schema.sql
+/prd.log
+/stg.log
+/.git~
+/.env
