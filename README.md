@@ -16,7 +16,7 @@
 ## 安裝
 
 ```bash
-git clone https://github.com/your-username/db-sync.git
+git clone https://github.com/leoshiang/db-sync.git
 cd db-sync
 npm install
 ```
