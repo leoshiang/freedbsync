@@ -159,8 +159,14 @@ class ObjectService {
                                 if (alterStatements.length > 0) {
                                     this.pushSql(`-- 修改資料表 ${table.schema_name}.${table.name} 結構\n`);
                                     alterStatements.forEach(stmt => {
-                                        this.pushSql(`${stmt};\n`);
-                                        this.pushSql(`GO\n\n`);
+                                        if (stmt.trim().startsWith('--')) {
+                                            // 註解行直接輸出
+                                            this.pushSql(`${stmt}\n`);
+                                        } else {
+                                            // SQL 語句加上分號和 GO
+                                            this.pushSql(`${stmt};\n`);
+                                            this.pushSql(`GO\n\n`);
+                                        }
                                     });
                                 }
                             }
@@ -250,13 +256,20 @@ class ObjectService {
                             // 表格存在，執行增量修改
                             const alterStatements = await this.generateTableAlterStatements(o.schema_name, o.name);
                             if (alterStatements.length > 0) {
+                                let actualStatements = 0;
                                 for (const stmt of alterStatements) {
-                                    this.debugLog(`執行 ALTER TABLE: ${o.schema_name}.${o.name}`, stmt);
-                                    await this.dstAdapter.executeBatch(stmt);
+                                    // 跳過註解行
+                                    if (!stmt.trim().startsWith('--')) {
+                                        this.debugLog(`執行 ALTER TABLE: ${o.schema_name}.${o.name}`, stmt);
+                                        await this.dstAdapter.executeBatch(stmt);
+                                        actualStatements++;
+                                    }
                                 }
-                                console.log(`  修改資料表: ${o.schema_name}.${o.name} ✓ (${alterStatements.length} 個變更)`);
-                                successCount++;
-                                totalCount++;
+                                if (actualStatements > 0) {
+                                    console.log(`  修改資料表: ${o.schema_name}.${o.name} ✓ (${actualStatements} 個變更)`);
+                                    successCount++;
+                                    totalCount++;
+                                }
                             }
                         }
                     } else {
@@ -311,7 +324,7 @@ class ObjectService {
         console.log(`\n物件建立完成 - 觸及: ${totalCount}, 成功: ${successCount}, 失敗: ${failureCount}`);
     }
 
-    // 新增：產生表格修改語句
+    // 修改：產生表格修改語句，加入刪除多餘欄位的邏輯
     async generateTableAlterStatements(schemaName, tableName) {
         const statements = [];
 
@@ -324,6 +337,12 @@ class ObjectService {
                 return statements;
             }
 
+            // 建立來源欄位的對照表
+            const srcColumnMap = new Map();
+            srcColumns.forEach(col => {
+                srcColumnMap.set(col.column_name.toLowerCase(), col);
+            });
+
             // 建立目標欄位的對照表
             const dstColumnMap = new Map();
             if (dstColumns) {
@@ -332,7 +351,59 @@ class ObjectService {
                 });
             }
 
-            // 比較每個來源欄位
+            // 第一階段：處理需要刪除的欄位（目標有但來源沒有）
+            const columnsToDelete = [];
+            for (const dstCol of dstColumns || []) {
+                const colName = dstCol.column_name.toLowerCase();
+                if (!srcColumnMap.has(colName)) {
+                    columnsToDelete.push(dstCol);
+                }
+            }
+
+            // 刪除欄位及其相依約束
+            for (const dstCol of columnsToDelete) {
+                try {
+                    // 檢查該欄位的相依約束
+                    const dependencies = await this.dstAdapter.getColumnDependencies(
+                        schemaName, tableName, dstCol.column_name
+                    );
+
+                    // 先刪除相依約束
+                    for (const dep of dependencies) {
+                        statements.push(`-- 刪除相依${dep.dependency_type}: ${dep.dependency_name}`);
+                        statements.push(dep.drop_statement);
+                        this.debugLog(`刪除相依約束: ${dep.dependency_type} - ${dep.dependency_name}`);
+                    }
+
+                    // 刪除預設約束（如果有）
+                    if (dstCol.default_constraint_name) {
+                        const dropDefaultStmt = this.dstAdapter.generateDropDefaultConstraintStatement(
+                            schemaName, tableName, dstCol.default_constraint_name
+                        );
+                        statements.push(`-- 刪除預設約束: ${dstCol.default_constraint_name}`);
+                        statements.push(dropDefaultStmt);
+                    }
+
+                    // 最後刪除欄位
+                    const dropColumnStmt = this.dstAdapter.generateDropColumnStatement(
+                        schemaName, tableName, dstCol.column_name
+                    );
+                    statements.push(`-- 刪除欄位: ${dstCol.column_name}`);
+                    statements.push(dropColumnStmt);
+
+                    this.debugLog(`刪除欄位: ${schemaName}.${tableName}.${dstCol.column_name}`);
+                } catch (err) {
+                    console.error(`分析欄位 ${dstCol.column_name} 相依性失敗: ${err.message}`);
+                    // 仍然嘗試刪除欄位，但會在註解中標註警告
+                    statements.push(`-- 警告：無法分析相依性，強制刪除欄位: ${dstCol.column_name}`);
+                    const dropColumnStmt = this.dstAdapter.generateDropColumnStatement(
+                        schemaName, tableName, dstCol.column_name
+                    );
+                    statements.push(dropColumnStmt);
+                }
+            }
+
+            // 第二階段：處理需要新增的欄位（來源有但目標沒有）
             for (const srcCol of srcColumns) {
                 const colName = srcCol.column_name.toLowerCase();
                 const dstCol = dstColumnMap.get(colName);
@@ -341,10 +412,19 @@ class ObjectService {
                     // 欄位不存在，需要新增
                     const colDef = this.srcAdapter.formatColumnDefinition(srcCol);
                     const addStmt = this.srcAdapter.generateAddColumnStatement(schemaName, tableName, colDef);
+                    statements.push(`-- 新增欄位: ${srcCol.column_name}`);
                     statements.push(addStmt);
 
                     this.debugLog(`新增欄位: ${schemaName}.${tableName}.${srcCol.column_name}`);
-                } else {
+                }
+            }
+
+            // 第三階段：處理需要修改的欄位（兩邊都有但定義不同）
+            for (const srcCol of srcColumns) {
+                const colName = srcCol.column_name.toLowerCase();
+                const dstCol = dstColumnMap.get(colName);
+
+                if (dstCol) {
                     // 欄位存在，比較是否需要修改
                     const differences = this.getColumnDifferences(srcCol, dstCol);
                     if (differences.length > 0) {
@@ -355,6 +435,7 @@ class ObjectService {
                                 const dropDefaultStmt = this.srcAdapter.generateDropDefaultConstraintStatement(
                                     schemaName, tableName, dstCol.default_constraint_name
                                 );
+                                statements.push(`-- 刪除舊預設約束: ${dstCol.default_constraint_name}`);
                                 statements.push(dropDefaultStmt);
                             }
                         }
@@ -362,14 +443,17 @@ class ObjectService {
                         // 注意：IDENTITY 欄位無法用 ALTER COLUMN 修改，可能需要特殊處理
                         if (srcCol.is_identity || dstCol.is_identity) {
                             if (differences.includes('identity')) {
+                                statements.push(`-- 警告：IDENTITY 欄位 ${srcCol.column_name} 無法直接修改，請手動處理`);
                                 console.warn(`警告：IDENTITY 欄位 ${schemaName}.${tableName}.${srcCol.column_name} 無法直接修改，請手動處理`);
                             } else {
                                 // 只是其他屬性變更，仍可嘗試修改
                                 const alterStmt = this.srcAdapter.generateAlterColumnStatement(schemaName, tableName, srcCol);
+                                statements.push(`-- 修改欄位: ${srcCol.column_name} (${differences.join(', ')})`);
                                 statements.push(alterStmt);
                             }
                         } else {
                             const alterStmt = this.srcAdapter.generateAlterColumnStatement(schemaName, tableName, srcCol);
+                            statements.push(`-- 修改欄位: ${srcCol.column_name} (${differences.join(', ')})`);
                             statements.push(alterStmt);
                         }
 
@@ -378,6 +462,7 @@ class ObjectService {
                             const addDefaultStmt = this.srcAdapter.generateAddDefaultConstraintStatement(
                                 schemaName, tableName, srcCol.column_name, srcCol.default_constraint
                             );
+                            statements.push(`-- 新增預設約束: ${srcCol.column_name}`);
                             statements.push(addDefaultStmt);
                         }
 

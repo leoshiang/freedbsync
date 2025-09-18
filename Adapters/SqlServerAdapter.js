@@ -29,7 +29,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                                       FROM sys.objects o
                                       WHERE o.type IN ('U', 'V', 'P', 'FN', 'TF', 'IF'))
                   AND s.name NOT IN ('dbo', 'sys', 'information_schema', 'guest')
-			`);
+            `);
             return recordset.map(r => r.schema_name);
         });
     }
@@ -68,7 +68,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                          JOIN sys.schemas s ON s.schema_id = o.schema_id
                 WHERE RTRIM(o.type) IN ('U', 'V', 'P', 'FN', 'TF', 'IF')
                 ORDER BY s.name, o.name
-			`;
+            `;
 
             this.debugLog('讀取資料庫物件', sql);
             const {recordset} = await pool.request().query(sql);
@@ -89,7 +89,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                               FROM sys.objects o
                               WHERE o.object_id = d.referenced_id
                                 AND o.type IN ('U', 'V', 'P', 'FN', 'TF', 'IF'))
-			`;
+            `;
 
             this.debugLog('讀取相依關係', sql);
             const {recordset} = await pool.request().query(sql);
@@ -119,7 +119,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                 WHERE s.name = @schemaName
                   AND o.name = @tableName
                 ORDER BY c.column_id
-			`;
+            `;
 
             this.debugLog(`產生資料表 ${schemaName}.${tableName} CREATE 語句`, sql);
 
@@ -201,7 +201,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                 WHERE s.name = @schemaName
                   AND o.name = @tableName
                 ORDER BY c.column_id
-			`;
+            `;
 
             const {recordset} = await pool.request()
                 .input('schemaName', mssql.NVarChar, schemaName)
@@ -275,6 +275,11 @@ class SqlServerAdapter extends DatabaseAdapter {
         return `ALTER TABLE [${schemaName}].[${tableName}] ALTER COLUMN [${col.column_name}] ${def}`;
     }
 
+    // 新增：產生 ALTER TABLE 語句來刪除欄位
+    generateDropColumnStatement(schemaName, tableName, columnName) {
+        return `ALTER TABLE [${schemaName}].[${tableName}] DROP COLUMN [${columnName}]`;
+    }
+
     // 新增：產生刪除預設約束語句
     generateDropDefaultConstraintStatement(schemaName, tableName, constraintName) {
         return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
@@ -284,6 +289,92 @@ class SqlServerAdapter extends DatabaseAdapter {
     generateAddDefaultConstraintStatement(schemaName, tableName, columnName, defaultValue) {
         const constraintName = `DF_${tableName}_${columnName}`;
         return `ALTER TABLE [${schemaName}].[${tableName}] ADD CONSTRAINT [${constraintName}] DEFAULT ${defaultValue} FOR [${columnName}]`;
+    }
+
+    // 新增：檢查欄位是否有相依約束或索引
+    async getColumnDependencies(schemaName, tableName, columnName) {
+        return this.withPool(async (pool) => {
+            const sql = `
+                -- 檢查 Foreign Key 約束
+                SELECT 'FOREIGN_KEY' AS dependency_type, 
+                       fk.name AS dependency_name,
+                       'ALTER TABLE [' + SCHEMA_NAME(fk.schema_id) + '].[' + tp.name + '] DROP CONSTRAINT [' + fk.name + ']' AS drop_statement
+                FROM sys.foreign_keys fk
+                INNER JOIN sys.tables tp ON fk.parent_object_id = tp.object_id
+                INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                INNER JOIN sys.columns c ON fkc.parent_object_id = c.object_id AND fkc.parent_column_id = c.column_id
+                WHERE tp.schema_id = SCHEMA_ID(@schemaName)
+                  AND tp.name = @tableName 
+                  AND c.name = @columnName
+                
+                UNION ALL
+                
+                -- 檢查 Check 約束
+                SELECT 'CHECK_CONSTRAINT' AS dependency_type,
+                       cc.name AS dependency_name,
+                       'ALTER TABLE [' + @schemaName + '].[' + @tableName + '] DROP CONSTRAINT [' + cc.name + ']' AS drop_statement
+                FROM sys.check_constraints cc
+                INNER JOIN sys.tables t ON cc.parent_object_id = t.object_id
+                WHERE t.schema_id = SCHEMA_ID(@schemaName)
+                  AND t.name = @tableName
+                  AND cc.definition LIKE '%[' + @columnName + ']%'
+                
+                UNION ALL
+                
+                -- 檢查索引（包含該欄位的索引）
+                SELECT 'INDEX' AS dependency_type,
+                       i.name AS dependency_name,
+                       'DROP INDEX [' + i.name + '] ON [' + @schemaName + '].[' + @tableName + ']' AS drop_statement
+                FROM sys.indexes i
+                INNER JOIN sys.tables t ON i.object_id = t.object_id
+                INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE t.schema_id = SCHEMA_ID(@schemaName)
+                  AND t.name = @tableName
+                  AND c.name = @columnName
+                  AND i.is_primary_key = 0
+                  AND i.type > 0
+                
+                UNION ALL
+                
+                -- 檢查 Primary Key 約束
+                SELECT 'PRIMARY_KEY' AS dependency_type,
+                       i.name AS dependency_name,
+                       'ALTER TABLE [' + @schemaName + '].[' + @tableName + '] DROP CONSTRAINT [' + i.name + ']' AS drop_statement
+                FROM sys.indexes i
+                INNER JOIN sys.tables t ON i.object_id = t.object_id
+                INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE t.schema_id = SCHEMA_ID(@schemaName)
+                  AND t.name = @tableName
+                  AND c.name = @columnName
+                  AND i.is_primary_key = 1
+                
+                UNION ALL
+                
+                -- 檢查 Unique 約束
+                SELECT 'UNIQUE_CONSTRAINT' AS dependency_type,
+                       kc.name AS dependency_name,
+                       'ALTER TABLE [' + @schemaName + '].[' + @tableName + '] DROP CONSTRAINT [' + kc.name + ']' AS drop_statement
+                FROM sys.key_constraints kc
+                INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
+                INNER JOIN sys.indexes i ON kc.parent_object_id = i.object_id AND kc.unique_index_id = i.index_id
+                INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE t.schema_id = SCHEMA_ID(@schemaName)
+                  AND t.name = @tableName
+                  AND c.name = @columnName
+                  AND kc.type = 'UQ'
+            `;
+
+            const {recordset} = await pool.request()
+                .input('schemaName', mssql.NVarChar, schemaName)
+                .input('tableName', mssql.NVarChar, tableName)
+                .input('columnName', mssql.NVarChar, columnName)
+                .query(sql);
+
+            return recordset || [];
+        });
     }
 
     // 約束相關操作
@@ -313,7 +404,7 @@ class SqlServerAdapter extends DatabaseAdapter {
 				WHERE i.is_primary_key = 1
 				GROUP BY i.object_id, i.name, t.schema_id, t.name, i.type
 				ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
-			`;
+            `;
 
             this.debugLog('讀取主鍵約束', sql);
             const {recordset} = await pool.request().query(sql);
@@ -336,14 +427,14 @@ class SqlServerAdapter extends DatabaseAdapter {
                     SCHEMA_NAME(tr.schema_id) + '].[' + tr.name + '] (' +
                     STRING_AGG(cr.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) + ')' AS create_statement
                 FROM sys.foreign_keys fk
-                         INNER JOIN sys.tables tp ON fk.parent_object_id = tp.object_id
-                         INNER JOIN sys.tables tr ON fk.referenced_object_id = tr.object_id
-                         INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-                         INNER JOIN sys.columns cp ON fkc.parent_object_id = cp.object_id AND fkc.parent_column_id = cp.column_id
-                         INNER JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id
+                    INNER JOIN sys.tables tp ON fk.parent_object_id = tp.object_id
+                    INNER JOIN sys.tables tr ON fk.referenced_object_id = tr.object_id
+                    INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                    INNER JOIN sys.columns cp ON fkc.parent_object_id = cp.object_id AND fkc.parent_column_id = cp.column_id
+                    INNER JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id
                 GROUP BY fk.object_id, fk.name, fk.schema_id, tp.name, tr.name, tr.schema_id
                 ORDER BY SCHEMA_NAME(fk.schema_id), tp.name, fk.name
-			`;
+            `;
 
             this.debugLog('讀取外鍵約束', sql);
             const {recordset} = await pool.request().query(sql);
@@ -365,14 +456,14 @@ class SqlServerAdapter extends DatabaseAdapter {
                                           CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ')
                                           WITHIN GROUP (ORDER BY ic.key_ordinal) + ')' AS create_statement
                 FROM sys.key_constraints kc
-                         INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
-                         INNER JOIN sys.indexes i ON kc.parent_object_id = i.object_id AND kc.unique_index_id = i.index_id
-                         INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-                         INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                    INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
+                    INNER JOIN sys.indexes i ON kc.parent_object_id = i.object_id AND kc.unique_index_id = i.index_id
+                    INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                    INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
                 WHERE kc.type = 'UQ'
                 GROUP BY kc.object_id, kc.name, t.schema_id, t.name
                 ORDER BY SCHEMA_NAME(t.schema_id), t.name, kc.name
-			`;
+            `;
 
             this.debugLog('讀取唯一約束', sql);
             const {recordset} = await pool.request().query(sql);
@@ -393,7 +484,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                            ELSE 'OTHER' END                                  AS index_type,
                        i.is_unique,
                        STRING_AGG(c.name + CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ')
-                                    WITHIN GROUP (ORDER BY ic.key_ordinal) AS column_list,
+                           WITHIN GROUP (ORDER BY ic.key_ordinal) AS column_list,
                        'CREATE ' + CASE WHEN i.is_unique = 1 THEN 'UNIQUE ' ELSE '' END +
                        CASE i.type WHEN 1 THEN 'CLUSTERED' WHEN 2 THEN 'NONCLUSTERED' ELSE '' END +
                        ' INDEX [' + i.name + '] ON [' + SCHEMA_NAME(t.schema_id) + '].[' + t.name + '] (' +
@@ -409,7 +500,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                   AND i.name IS NOT NULL
                 GROUP BY i.object_id, i.name, t.schema_id, t.name, i.type, i.is_unique
                 ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
-			`;
+            `;
 
             this.debugLog('讀取索引', sql);
             const {recordset} = await pool.request().query(sql);
@@ -435,7 +526,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                              WHEN 'V' THEN 3
                              WHEN 'U' THEN 4
                              END, s.name, o.name
-			`;
+            `;
 
             this.debugLog('讀取現有物件', sql);
             const {recordset} = await pool.request().query(sql);
@@ -452,7 +543,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                 FROM sys.foreign_keys fk
                          INNER JOIN sys.tables tp ON fk.parent_object_id = tp.object_id
                 ORDER BY SCHEMA_NAME(fk.schema_id), tp.name, fk.name
-			`;
+            `;
 
             this.debugLog('讀取現有外鍵約束', sql);
             const {recordset} = await pool.request().query(sql);
@@ -473,7 +564,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                   AND i.type > 0
                   AND i.name IS NOT NULL
                 ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
-			`;
+            `;
 
             this.debugLog('讀取現有索引', sql);
             const {recordset} = await pool.request().query(sql);
@@ -504,7 +595,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                 WHERE s.name = @schemaName
                   AND o.name = @tableName
                 ORDER BY c.column_id
-			`;
+            `;
 
             this.debugLog(`讀取資料表欄位: ${schemaName}.${tableName}`, sql);
 
@@ -524,7 +615,7 @@ class SqlServerAdapter extends DatabaseAdapter {
                        name                   AS table_name
                 FROM sys.tables
                 ORDER BY SCHEMA_NAME(schema_id), name
-			`;
+            `;
 
             this.debugLog('讀取資料表清單', sql);
             const {recordset} = await pool.request().query(sql);
