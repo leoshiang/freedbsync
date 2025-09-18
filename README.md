@@ -18,39 +18,27 @@
 ## 安裝方式
 
 ### 方式1: 使用 npx (推薦)
-```
-
-bash npx freedbsync --help
-
+```bash
+npx freedbsync --help
 ```
 ### 方式2: 全域安裝
-```
-
-bash npm install -g . freedbsync --help
-
+```bash
+npm install -g . freedbsync --help
 ```
 ### 方式3: 本地開發
-```
-
-bash
-
+```bash
 # 複製專案
-
 git clone https://github.com/leoshiang/freedbsync
 cd freedbsync
 
 # 安裝相依套件
-
 npm install
 
 # 建立全域連結
-
 npm link
 
 # 現在可以使用
-
 freedbsync --help
-
 ```
 ## 系統需求
 
@@ -63,7 +51,6 @@ freedbsync --help
 ### 基本語法
 ```bash
 freedbsync [選項]
-
 ```
 ### 必要參數
 | 參數 | 說明 | 範例 |
@@ -253,7 +240,7 @@ freedbsync --debug --dry-run --src-server=... --src-db=... --src-user=... --src-
 
 確保資料庫使用者擁有適當權限：
 
-```
+```sql
 -- 來源資料庫 (最小權限)
 GRANT SELECT ON SCHEMA::dbo TO [sync_user];
 GRANT VIEW DEFINITION ON SCHEMA::dbo TO [sync_user];
