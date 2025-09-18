@@ -22,7 +22,7 @@ global.DEBUG_MODE = isDebug;
 
 function showVersionInfo() {
     const packageJson = require('./package.json');
-    console.log(`DbSync v${packageJson.version}`);
+    console.log(`FreeDbSync v${packageJson.version}`);
     console.log(`Node.js ${process.version}`);
     console.log(`Platform: ${process.platform} ${process.arch}`);
 }
@@ -30,13 +30,13 @@ function showVersionInfo() {
 function showHelpMessage() {
     const packageJson = require('./package.json');
     console.log(`
-資料庫同步工具 (DbSync) v${packageJson.version}
+資料庫同步工具 (FreeDbSync) v${packageJson.version}
 =======================================
 
 使用方法:
-  dbsync [選項]
+  freedbsync [選項]
   node index.js [選項]
-  npx dbsync [選項]
+  npx freedbsync [選項]
 
 必要參數:
   --src-server       來源資料庫伺服器位址
@@ -67,28 +67,28 @@ function showHelpMessage() {
 
 範例:
   # 顯示說明
-  dbsync --help
+  freedbsync --help
 
   # 顯示版本
-  dbsync --version
+  freedbsync --version
 
   # 預覽模式 - 產生 SQL 腳本
-  dbsync --dry-run \\
+  freedbsync --dry-run \\
     --src-server=localhost --src-db=source_db \\
     --src-user=sa --src-pwd=password
 
   # 實際同步
-  dbsync \\
+  freedbsync \\
     --src-server=localhost --src-db=source_db --src-user=sa --src-pwd=password \\
     --dst-server=localhost --dst-db=target_db --dst-user=sa --dst-pwd=password
 
   # 比較模式 - 只處理差異項目
-  dbsync --compare-only --dry-run \\
+  freedbsync --compare-only --dry-run \\
     --src-server=localhost --src-db=source_db --src-user=sa --src-pwd=password \\
     --dst-server=localhost --dst-db=target_db --dst-user=sa --dst-pwd=password
 
   # 除錯模式
-  dbsync --debug --dry-run \\
+  freedbsync --debug --dry-run \\
     --src-server=localhost --src-db=source_db --src-user=sa --src-pwd=password
 
 輸出檔案:

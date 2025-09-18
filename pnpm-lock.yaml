@@ -8,17 +8,14 @@ importers:
 
   .:
     dependencies:
-      dotenv:
-        specifier: ^17.2.1
-        version: 17.2.2
       graphlib:
-        specifier: ^2.1.8
+        specifier: 2.1.8
         version: 2.1.8
       minimist:
-        specifier: ^1.2.8
+        specifier: 1.2.8
         version: 1.2.8
       mssql:
-        specifier: ^11.0.1
+        specifier: 11.0.1
         version: 11.0.1
 
 packages:
@@ -154,10 +151,6 @@ packages:
 
   define-lazy-prop@3.0.0:
     resolution: {integrity: sha512-N+MeXYoqr3pOgn8xfyRPREN7gHakLYjhsHhWGT3fWAiL4IkAt0iDw14QiiEm2bE30c5XX5q0FtAA3CK5f9/BUg==}
-    engines: {node: '>=12'}
-
-  dotenv@17.2.2:
-    resolution: {integrity: sha512-Sf2LSQP+bOlhKWWyhFsn0UsfdK/kCWRv1iuA2gXAwt3dyNabr6QSj00I2V10pidqz69soatm9ZwZvpQMTIOd5Q==}
     engines: {node: '>=12'}
 
   ecdsa-sig-formatter@1.0.11:
@@ -522,8 +515,6 @@ snapshots:
       default-browser-id: 5.0.0
 
   define-lazy-prop@3.0.0: {}
-
-  dotenv@17.2.2: {}
 
   ecdsa-sig-formatter@1.0.11:
     dependencies:

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * DbSync CLI 工具入口點
+ * FreeDbSync CLI 工具入口點
  * 支援作為全域工具使用
  */
 

@@ -1,309 +1,367 @@
-# 資料庫同步工具 (Database Sync Tool)
+# 資料庫同步工具 (FreeDbSync)
 
-一個用於資料庫同步的 Node.js 工具，支援完整的資料庫結構和資料複製，並提供智慧差異比較功能。
-> 敬請注意：此功能會永久刪除資料。為避免資料遺失，強烈建議您在操作前詳閱說明文件。使用者需自行承擔因使用此功能所造成的一切風險。
+![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)
+![License](https://img.shields.io/badge/License-MIT-blue)
+![Version](https://img.shields.io/badge/Version-2.0.0-orange)
 
-## 重要更新 (v2.0)
+一個強大的資料庫同步工具，支援 Schema、物件、資料、約束和索引的完整同步。專為 SQL Server 設計，提供預覽模式和比較模式，確保安全可靠的資料庫遷移。
 
-- **全新智慧比較模式**：支援完整的資料庫結構差異分析與增量同步
-- **精確欄位比較**：自動檢測資料表欄位的新增、修改、刪除
-- **約束與索引智慧比較**：完整比較主鍵、外鍵、索引的差異
-- **物件定義比較**：智慧比較檢視表、函數、預存程序的定義差異
-- **安全的相依性處理**：自動分析並處理物件間的相依關係
-- 移除 .env 與 dotenv，相依配置全面改為命令列參數
-- 清楚區分來源與目標參數：使用 `--src-*` 與 `--dst-*`
-- 服務層不再自行讀取組態，改由主程式注入來源/目標連線
+## 特色功能
 
-## 功能特色
+- **完整同步**: 支援 Schema、資料表、檢視表、預存程序、函數、約束、索引
+- **預覽模式**: 產生 SQL 腳本而不實際執行，可先檢查再應用
+- **比較模式**: 只處理目標與來源不同的項目，提高效率
+- **相依性排序**: 自動處理物件間的相依關係
+- **除錯支援**: 詳細的執行日誌和錯誤訊息
+- **安全設計**: 支援 IDENTITY 欄位處理和資料完整性檢查
 
-### 核心功能
-- **完整的資料庫同步**：包含 Schema、資料表、檢視表、函數、預存程序
-- **相依性排序**：自動分析物件間的相依關係，確保正確的建立順序
-- **約束和索引支援**：完整複製主鍵、外鍵和索引
-- **資料複製**：支援所有資料型別，包含 IDENTITY 欄位
-- **多種執行模式**：實際執行或產生 SQL 腳本
-- **詳細日誌與偵錯模式**：完整的執行日誌和錯誤處理
+## 安裝方式
 
-### 智慧比較模式功能
-
-#### **資料表結構完整比較**
-- **欄位差異檢測**：
-    - 自動檢測新增、修改、刪除的欄位
-    - 比較資料型別、長度、精確度、NULL 約束
-    - 處理 IDENTITY 屬性和預設約束差異
-- **安全的欄位修改**：
-    - 自動處理相依約束 (外鍵、索引、檢查約束)
-    - 智慧處理預設約束的變更
-    - 提供 IDENTITY 欄位修改警告
-
-#### **約束與索引智慧比較**
-- **主鍵比較**：
-    - 檢測缺失、多餘、定義不同的主鍵
-    - 自動重新建立有差異的主鍵約束
-- **外鍵比較**：
-    - 完整比較外鍵定義和參照關係
-    - 安全處理外鍵的刪除與重建
-- **索引比較**：
-    - 比較所有非主鍵索引的定義
-    - 處理唯一索引和複合索引差異
-
-#### **資料庫物件智慧比較**
-- **檢視表比較**：
-    - 比較檢視表定義的差異
-    - 自動處理檢視表的刪除與重建
-- **函數比較**：
-    - 支援純量函數、資料表函數、內嵌函數
-    - 智慧比較函數定義和參數
-- **預存程序比較**：
-    - 完整比較程序定義和邏輯
-    - 處理程序的版本差異
-
-#### **安全的差異處理**
-- **三階段處理邏輯**：
-    1. 刪除目標端多餘的項目
-    2. 新增來源端有但目標端沒有的項目
-    3. 修改定義不同的項目
-- **相依性安全處理**：
-    - 自動分析物件間相依關係
-    - 按照安全順序執行刪除和建立
-    - 避免因相依性問題導致操作失敗
-
-## 安裝
-```bash
-git clone https://github.com/leoshiang/dbsync
-cd dbsync
-npm install
+### 方式1: 使用 npx (推薦)
 ```
 
-## 參數與使用
+bash npx freedbsync --help
 
-所有連線資訊均以命令列參數提供，不再讀取 .env。
+```
+### 方式2: 全域安裝
+```
 
-### 共用旗標
-- `--dry-run`：產生 SQL 檔案（schema.sql, data.sql），不實際執行
-- `--debug`：輸出詳細偵錯訊息和 SQL 語句
-- `--compare-only`：**智慧比較模式**，僅針對「目標不存在」或「定義不同」的項目產生 SQL（略過清理與資料複製）
+bash npm install -g . freedbsync --help
 
-### 來源參數（必填）
-- `--src-type`：來源資料庫型別（預設 `sqlserver`）
-- `--src-server`：來源伺服器
-- `--src-port`：來源連接埠（選填）
-- `--src-db`：來源資料庫名稱
-- `--src-user`：來源使用者
-- `--src-pwd`：來源密碼
+```
+### 方式3: 本地開發
+```
 
-### 目標參數
-- 非 `--dry-run` 時：必填
-- 在 `--compare-only` 下：即使是 `--dry-run` 也必填（需要比對目標）
-- `--dst-type`：目標資料庫型別（預設 `sqlserver`）
-- `--dst-server`：目標伺服器
-- `--dst-port`：目標連接埠（選填）
-- `--dst-db`：目標資料庫名稱
-- `--dst-user`：目標使用者
-- `--dst-pwd`：目標密碼
+bash
+
+# 複製專案
+
+git clone https://github.com/leoshiang/freedbsync
+cd freedbsync
+
+# 安裝相依套件
+
+npm install
+
+# 建立全域連結
+
+npm link
+
+# 現在可以使用
+
+freedbsync --help
+
+```
+## 系統需求
+
+- **Node.js**: >= 18.0.0
+- **npm**: >= 8.0.0
+- **資料庫**: SQL Server (支援 SQL Server 2016 以上版本)
+
+## 使用方法
+
+### 基本語法
+```bash
+freedbsync [選項]
+
+```
+### 必要參數
+| 參數 | 說明 | 範例 |
+|------|------|------|
+| `--src-server` | 來源資料庫伺服器位址 | `localhost` |
+| `--src-db` | 來源資料庫名稱 | `source_db` |
+| `--src-user` | 來源資料庫使用者名稱 | `sa` |
+| `--src-pwd` | 來源資料庫密碼 | `password123` |
+
+### 目標資料庫參數 (非 dry-run 模式必要)
+| 參數 | 說明 | 範例 |
+|------|------|------|
+| `--dst-server` | 目標資料庫伺服器位址 | `localhost` |
+| `--dst-db` | 目標資料庫名稱 | `target_db` |
+| `--dst-user` | 目標資料庫使用者名稱 | `sa` |
+| `--dst-pwd` | 目標資料庫密碼 | `password123` |
+
+### 選用參數
+| 參數 | 說明 | 預設值 |
+|------|------|--------|
+| `--src-type` | 來源資料庫類型 | `sqlserver` |
+| `--src-port` | 來源資料庫連接埠 | `1433` |
+| `--dst-type` | 目標資料庫類型 | `sqlserver` |
+| `--dst-port` | 目標資料庫連接埠 | `1433` |
+
+### 執行模式
+| 參數 | 說明 |
+|------|------|
+| `--dry-run` | 預覽模式，產生 SQL 腳本而不執行 |
+| `--compare-only` | 比較模式，僅處理差異項目 |
+
+### 其他選項
+| 參數 | 說明 |
+|------|------|
+| `--debug` | 開啟除錯模式，顯示詳細執行資訊 |
+| `--help`, `-h` | 顯示說明訊息 |
+| `--version`, `-v` | 顯示版本資訊 |
 
 ## 使用範例
 
-### 1. 完整同步模式
-
-**Dry-run（產生完整同步腳本）**
+### 1. 顯示說明
 ```bash
-node index.js --dry-run \
-  --src-server 127.0.0.1 --src-db SourceDb --src-user sa --src-pwd your_password
+freedbsync --help
 ```
+### 2. 顯示版本
 
-**實際同步（完整覆蓋）**
 ```bash
-node index.js \
-  --src-server 127.0.0.1 --src-db SourceDb --src-user sa --src-pwd your_password \
-  --dst-server 10.0.0.2 --dst-db TargetDb --dst-user sa --dst-pwd your_password
+freedbsync --version
 ```
-
-### 2. 智慧比較模式 (建議使用)
-
-**比較模式 Dry-run（產生差異同步腳本）**
+### 3. 預覽模式 - 產生 SQL 腳本
 ```bash
-node index.js --dry-run --compare-only \
-  --src-server 127.0.0.1 --src-db SourceDb --src-user sa --src-pwd your_password \
-  --dst-server 10.0.0.2 --dst-db TargetDb --dst-user sa --dst-pwd your_password
-```
+freedbsync --dry-run
+  --src-server=localhost
+  --src-db=source_db
+  --src-user=sa
+  --src-pwd=password123
 
-**比較模式實際執行（增量同步）**
+```
+### 4. 實際同步
+
 ```bash
-node index.js --compare-only \
-  --src-server 127.0.0.1 --src-db SourceDb --src-user sa --src-pwd your_password \
-  --dst-server 10.0.0.2 --dst-db TargetDb --dst-user sa --dst-pwd your_password
-```
+freedbsync
+  --src-server=localhost
+  --src-db=source_db
+  --src-user=sa
+  --src-pwd=password123
+  --dst-server=localhost
+  --dst-db=target_db
+  --dst-user=sa
+  --dst-pwd=password123
 
-### 3. 偵錯模式
+```
+### 5. 比較模式 - 只處理差異項目
+
 ```bash
-node index.js --debug --dry-run --compare-only \
-  --src-server 127.0.0.1 --src-db SourceDb --src-user sa --src-pwd your_password \
-  --dst-server 10.0.0.2 --dst-db TargetDb --dst-user sa --dst-pwd your_password
+freedbsync --compare-only --dry-run
+  --src-server=localhost
+  --src-db=source_db
+  --src-user=sa
+  --src-pwd=password123
+  --dst-server=localhost
+  --dst-db=target_db
+  --dst-user=sa
+  --dst-pwd=password123
+
 ```
+### 6. 除錯模式
+```bash
+freedbsync --debug --dry-run
+  --src-server=localhost
+  --src-db=source_db
+  --src-user=sa
+  --src-pwd=password123
 
-## 同步流程
+````
+### 7. 跨伺服器同步
 
-### 完整同步模式流程
-1. **建立 Schema** - 建立自訂 schema
-2. **清理目標** - 刪除目標資料庫現有物件（僅完整同步模式）
-3. **建立物件** - 按相依性順序建立資料表、檢視表、函數、預存程序
-4. **複製資料** - 複製所有資料表資料（支援 IDENTITY 欄位）
-5. **建立約束** - 建立主鍵和外鍵約束
-6. **建立索引** - 建立所有索引與唯一約束
-
-### 智慧比較模式流程
-1. **建立 Schema** - 建立缺失的 schema
-2. **比較資料表結構**：
-    - 刪除多餘的欄位及其相依約束
-    - 新增缺失的欄位
-    - 修改定義不同的欄位
-3. **比較資料庫物件**：
-    - 刪除多餘的檢視表、函數、預存程序
-    - 新增缺失的物件
-    - 重新建立定義不同的物件
-4. **比較約束**：
-    - 處理主鍵和外鍵差異
-5. **比較索引**：
-    - 處理索引的新增、刪除、修改
+```bash
+freedbsync \
+  --src-server=prod-server.company.com \
+  --src-port=1433 \
+  --src-db=production_db \
+  --src-user=sync_user \
+  --src-pwd=secure_password \
+  --dst-server=dev-server.company.com \
+  --dst-port=1433 \
+  --dst-db=development_db \
+  --dst-user=dev_user \
+  --dst-pwd=dev_password
+```
 
 ## 輸出檔案
 
-在 `--dry-run` 模式下，將會輸出：
+### schema.sql
 
-### 完整同步模式
-- `schema.sql`：完整的 Schema 與物件建立腳本（包含清理腳本）
-- `data.sql`：完整的資料插入腳本
+包含所有 Schema 相關的 SQL 指令：
 
-### 比較模式
-- `schema.sql`：**僅包含差異的增量同步腳本**
-    - 詳細的比較結果註解
-    - 安全的執行順序
-    - 完整的錯誤處理提示
+- Schema 建立
+- 資料表結構
+- 檢視表、預存程序、函數
+- 主鍵、外鍵約束
+- 索引
 
-## 比較模式產生的 SQL 範例
+### data.sql (僅在非比較模式)
 
-```sql
--- =============================================
--- 資料庫 Schema 建立/變更腳本
--- 模式: 比較模式
--- 產生時間: 2024/12/19 上午10:30:15
--- =============================================
+包含所有資料複製的 SQL 指令：
 
--- 修改資料表 dbo.Users 結構
--- 刪除多餘欄位: OldColumn
-ALTER TABLE [dbo].[Users] DROP COLUMN [OldColumn];
-GO
-
--- 新增欄位: NewColumn
-ALTER TABLE [dbo].[Users] ADD [NewColumn] [nvarchar](50) NULL;
-GO
-
--- 修改欄位: Email (max_length)
-ALTER TABLE [dbo].[Users] ALTER COLUMN [Email] [nvarchar](255) NOT NULL;
-GO
-
--- 刪除多餘檢視表: dbo.OldUserView
-DROP VIEW [dbo].[OldUserView];
-GO
-
--- 新增檢視表: dbo.NewUserView
-CREATE VIEW [dbo].[NewUserView] AS SELECT * FROM Users WHERE Active = 1;
-GO
-
--- 重新建立索引（定義不同）: dbo.Users.IX_Users_Email
-DROP INDEX [IX_Users_Email] ON [dbo].[Users];
-GO
-
-CREATE NONCLUSTERED INDEX [IX_Users_Email] ON [dbo].[Users] ([Email] ASC, [Active] ASC);
-GO
-```
+- INSERT 語句
+- IDENTITY 欄位處理
+- 批次處理最佳化
 
 ## 進階功能
 
-### 1. 欄位比較細節
-- **資料型別差異**：varchar vs nvarchar, int vs bigint
-- **長度差異**：varchar(50) vs varchar(100)
-- **精確度差異**：decimal(10,2) vs decimal(18,4)
-- **NULL 約束**：NULL vs NOT NULL
-- **預設值**：預設約束的新增、修改、刪除
-- **IDENTITY**：種子值和增量值的差異檢測
+### 比較模式詳解
 
-### 2. 約束處理
-- **相依性分析**：自動檢測欄位的相依約束
-- **安全刪除**：先刪除相依約束再刪除欄位
-- **重建策略**：對於定義不同的約束，先刪除後重建
+比較模式會分析來源和目標資料庫的差異，只產生必要的變更：
 
-### 3. 物件比較演算法
-- **SQL 標準化**：忽略空白、換行等格式差異
-- **語義比較**：專注於實質的定義差異
-- **版本控制友善**：適合用於 CI/CD 流程
+- **新增**: 目標不存在的物件
+- **修改**: 定義不同的物件
+- **刪除**: 目標多餘的物件
 
-## 注意事項
+### 相依性處理
 
-### 重要警告
-- 實際執行模式將對目標資料庫進行變更，請務必先做好備份
-- 比較模式仍可能刪除目標端的欄位、索引、約束等，請先使用 `--dry-run` 檢查
+工具會自動分析物件間的相依關係：
 
-### 最佳實務
-1. **開發階段**：使用比較模式進行增量同步
-2. **正式部署**：先用 `--dry-run --compare-only` 檢查差異
-3. **大型變更**：分階段執行，避免一次性大量變更
-4. **備份策略**：執行前務必備份目標資料庫
+- 資料表會依照外鍵關係排序
+- 檢視表會依照相依的資料表排序
+- 預存程序和函數會依照相依關係排序
 
-### 效能考量
-- 大量資料使用批次插入（預設 1000 筆/批）
-- 比較模式會分析兩端資料庫結構，對於大型資料庫可能耗時較長
-- 建議在非尖峰時段執行同步作業
+### 批次處理
 
-### CI/CD 整合
-```bash
-# 在 CI/CD 流程中使用
-node index.js --dry-run --compare-only \
-  --src-server $SOURCE_SERVER --src-db $SOURCE_DB \
-  --src-user $SOURCE_USER --src-pwd $SOURCE_PASSWORD \
-  --dst-server $TARGET_SERVER --dst-db $TARGET_DB \
-  --dst-user $TARGET_USER --dst-pwd $TARGET_PASSWORD
+- 資料複製採用批次處理 (預設 1000 筆一批)
+- 大型資料表會顯示進度資訊
+- 支援 IDENTITY 欄位的正確處理
 
-# 檢查產生的 schema.sql 是否符合預期
-if [ -f "schema.sql" ]; then
-  echo "Found database schema differences:"
-  cat schema.sql
-fi
+## 安全注意事項
+
+### 預覽模式優先
+
+- **建議**：總是先使用 `--dry-run` 預覽要執行的 SQL
+- **檢查**：仔細檢查產生的 schema.sql 和 data.sql
+- **測試**：在測試環境先驗證腳本
+
+### 備份重要性
+
+- **執行前**：務必備份目標資料庫
+- **大型變更**：建議分階段執行
+- **監控**：執行時監控資料庫效能
+
+### 權限需求
+
+- 來源資料庫：需要 `SELECT` 權限和系統檢視表存取權
+- 目標資料庫：需要 `CREATE`、`ALTER`、`INSERT` 權限
+
+## 疑難排解
+
+### 常見問題
+
+#### 1. 連線失敗
+
+```
+# 檢查連線參數
+freedbsync --debug --dry-run --src-server=... --src-db=... --src-user=... --src-pwd=...
 ```
 
-## 支援的資料庫
+#### 2. 權限不足
 
-- **SQL Server**：完整支援（2016 及以上版本）
-- **未來計畫**：MySQL、PostgreSQL、Oracle
+確保資料庫使用者擁有適當權限：
 
-## 技術架構
+```
+-- 來源資料庫 (最小權限)
+GRANT SELECT ON SCHEMA::dbo TO [sync_user];
+GRANT VIEW DEFINITION ON SCHEMA::dbo TO [sync_user];
 
-- **Node.js**: 跨平台執行環境
-- **mssql**: SQL Server 連線驅動程式
-- **graphlib**: 相依性分析和拓撲排序
-- **minimist**: 命令列參數解析
+-- 目標資料庫
+GRANT CREATE TABLE, CREATE VIEW, CREATE PROCEDURE TO [sync_user];
+```
+
+#### 3. 大型資料庫效能
+
+```
+# 使用比較模式減少不必要的操作
+freedbsync --compare-only --dst-server=... --dst-db=...
+```
+
+#### 4. 字元編碼問題
+
+確保資料庫的 Collation 設定相容：
+
+```
+SELECT name, collation_name FROM sys.databases;
+```
+
+### 除錯技巧
+
+#### 開啟除錯模式
+
+```
+freedbsync --debug [其他參數]
+```
+
+#### 檢查產生的 SQL
+
+```bash
+# 使用預覽模式產生檔案
+freedbsync --dry-run [其他參數]
+
+# 檢查檔案內容
+cat schema.sql
+cat data.sql
+```
+
+#### 分段執行
+
+```bash
+# 先只處理 Schema
+freedbsync --compare-only --dry-run [參數] > schema_only.sql
+
+# 手動執行並驗證
+sqlcmd -S server -d database -i schema_only.sql
+```
+
+## 效能考量
+
+### 最佳化建議
+
+- **索引**: 在資料複製完成後才建立索引
+- **約束**: 主鍵和外鍵在最後階段建立
+- **批次大小**: 預設 1000 筆，可根據記憶體調整
+- **並行處理**: 大型資料表考慮分割處理
+
+### 資源監控
+
+- **CPU**: 複雜查詢可能消耗大量 CPU
+- **記憶體**: 大型結果集需要足夠記憶體
+- **網路**: 跨網路同步注意頻寬限制
+- **磁碟**: SQL 檔案可能很大
+
+## 開發與貢獻
+
+### 專案結構
+
+```
+freedbsync/
+├── index.js              # 主程式入口
+├── bin/                  # CLI 工具
+├── Services/             # 核心服務
+│   ├── SchemaService.js
+│   ├── ObjectService.js
+│   ├── DataService.js
+│   ├── ConstraintService.js
+│   └── IndexService.js
+├── Adapters/             # 資料庫介面卡
+│   └── SqlServerAdapter.js
+├── Factories/            # 工廠模式
+│   └── DatabaseAdapterFactory.js
+├── Utils/                # 工具函數
+└── package.json
+```
+
+### 本地開發
+
+```bash
+# 複製專案
+git clone https://github.com/leoshiang/freedbsync
+cd freedbsync
+
+# 安裝相依套件
+npm install
+
+# 執行測試
+npm test
+
+# 建立連結
+npm link
+```
+
 
 ## 授權
 
-MIT License - 詳見 LICENSE 檔案
-
-## 貢獻
-
-歡迎提交 Issue 和 Pull Request 來幫助改進這個專案。
-
-## 更新日誌
-
-### v2.0.0 (2024-12-19)
-- 新增完整的智慧比較模式
-- 支援資料表欄位的增量比較和修改
-- 支援約束和索引的差異檢測
-- 支援檢視表、函數、預存程序的定義比較
-- 改善相依性處理和錯誤處理
-- 完整的文件更新和使用範例
-
-### v1.0.0 (2024-11-01)
-- 初始版本發布
-- 基本的資料庫完整同步功能
-- 支援 SQL Server
-- 命令列參數配置
+MIT License - 詳見 [LICENSE](LICENSE) 檔案
