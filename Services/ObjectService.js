@@ -86,6 +86,7 @@ class ObjectService {
     async createObjects(sortedObjs) {
         // 目標端物件快取（比較模式需要）
         let dstObjectMap = null;
+        let srcObjectMap = null;
         if (this.compareOnly) {
             if (!this.dstAdapter) throw new Error('比較模式需要目標連線');
             const dstObjects = await this.dstAdapter.readObjects();
@@ -93,6 +94,12 @@ class ObjectService {
             dstObjects.forEach(o => {
                 const key = `${o.type}|${o.schema_name}|${o.name}`.toLowerCase();
                 dstObjectMap.set(key, o);
+            });
+
+            srcObjectMap = new Map();
+            sortedObjs.forEach(o => {
+                const key = `${o.type}|${o.schema_name}|${o.name}`.toLowerCase();
+                srcObjectMap.set(key, o);
             });
         }
 
@@ -138,7 +145,7 @@ class ObjectService {
                 this.pushSql(`-- =============================================\n\n`);
             }
 
-            // 資料表
+            // 資料表處理
             if (tables.length > 0) {
                 console.log('產生資料表 CREATE/ALTER 語句...');
                 for (const table of tables) {
@@ -187,37 +194,40 @@ class ObjectService {
                 }
             }
 
-            // 其他物件
+            // 其他物件處理 (Views, Functions, Stored Procedures)
             if (otherObjects.length > 0) {
                 console.log('產生其他物件 CREATE 語句...');
-                for (const obj of otherObjects) {
-                    if (!obj.definition) {
-                        console.warn(`物件 ${obj.schema_name}.${obj.name} 沒有定義`);
-                        continue;
-                    }
 
-                    if (this.compareOnly) {
-                        const key = `${obj.type}|${obj.schema_name}|${obj.name}`.toLowerCase();
-                        const dstObj = dstObjectMap.get(key);
-                        let shouldEmit = false;
-                        if (!dstObj) {
-                            shouldEmit = true;
-                        } else {
-                            const srcDef = normalizeSql(obj.definition);
-                            const dstDef = normalizeSql(dstObj.definition);
-                            if (srcDef !== dstDef) shouldEmit = true;
+                if (this.compareOnly) {
+                    const alterStatements = await this.generateObjectAlterStatements(otherObjects, dstObjectMap, srcObjectMap);
+                    if (alterStatements.length > 0) {
+                        alterStatements.forEach(stmt => {
+                            if (stmt.trim().startsWith('--') || stmt.trim() === '') {
+                                // 註解行或空行直接輸出
+                                this.pushSql(`${stmt}\n`);
+                            } else {
+                                // SQL 語句加上分號和 GO
+                                this.pushSql(`${stmt};\n`);
+                                this.pushSql(`GO\n\n`);
+                            }
+                        });
+                    }
+                } else {
+                    for (const obj of otherObjects) {
+                        if (!obj.definition) {
+                            console.warn(`物件 ${obj.schema_name}.${obj.name} 沒有定義`);
+                            continue;
                         }
-                        if (!shouldEmit) continue;
+
+                        const typeNames = {
+                            'V': 'View', 'P': 'Procedure', 'FN': 'Function', 'TF': 'Function', 'IF': 'Function'
+                        };
+                        const typeName = typeNames[obj.type] || obj.type;
+
+                        this.pushSql(`-- 建立 ${obj.schema_name}.${obj.name} (${typeName})\n`);
+                        this.pushSql(`${obj.definition};\n`);
+                        this.pushSql(`GO\n\n`);
                     }
-
-                    const typeNames = {
-                        'V': 'View', 'P': 'Procedure', 'FN': 'Function', 'TF': 'Function', 'IF': 'Function'
-                    };
-                    const typeName = typeNames[obj.type] || obj.type;
-
-                    this.pushSql(`-- 建立 ${obj.schema_name}.${obj.name} (${typeName})\n`);
-                    this.pushSql(`${obj.definition};\n`);
-                    this.pushSql(`GO\n\n`);
                 }
             }
             return;
@@ -232,47 +242,13 @@ class ObjectService {
         let successCount = 0;
         let failureCount = 0;
 
-        for (const o of sortedObjs) {
+        // 處理資料表
+        for (const o of tables) {
             try {
-                if (o.type === 'U') {
-                    if (this.compareOnly) {
-                        const key = `U|${o.schema_name}|${o.name}`.toLowerCase();
-                        if (!dstObjectMap.has(key)) {
-                            // 表格不存在，建立完整表格
-                            const srcCreate = await this.generateTableCreateStatement(o.schema_name, o.name);
-                            if (!srcCreate) {
-                                console.log(`  建立資料表: ${o.schema_name}.${o.name} ✗ 無法產生 CREATE 語句`);
-                                failureCount++;
-                                continue;
-                            }
-
-                            this.debugLog(`執行 CREATE TABLE: ${o.schema_name}.${o.name}`, srcCreate);
-                            if (!this.dstAdapter) throw new Error('未提供目標連線');
-                            await this.dstAdapter.executeBatch(srcCreate);
-                            console.log(`  建立資料表: ${o.schema_name}.${o.name} ✓`);
-                            successCount++;
-                            totalCount++;
-                        } else {
-                            // 表格存在，執行增量修改
-                            const alterStatements = await this.generateTableAlterStatements(o.schema_name, o.name);
-                            if (alterStatements.length > 0) {
-                                let actualStatements = 0;
-                                for (const stmt of alterStatements) {
-                                    // 跳過註解行
-                                    if (!stmt.trim().startsWith('--')) {
-                                        this.debugLog(`執行 ALTER TABLE: ${o.schema_name}.${o.name}`, stmt);
-                                        await this.dstAdapter.executeBatch(stmt);
-                                        actualStatements++;
-                                    }
-                                }
-                                if (actualStatements > 0) {
-                                    console.log(`  修改資料表: ${o.schema_name}.${o.name} ✓ (${actualStatements} 個變更)`);
-                                    successCount++;
-                                    totalCount++;
-                                }
-                            }
-                        }
-                    } else {
+                if (this.compareOnly) {
+                    const key = `U|${o.schema_name}|${o.name}`.toLowerCase();
+                    if (!dstObjectMap.has(key)) {
+                        // 表格不存在，建立完整表格
                         const srcCreate = await this.generateTableCreateStatement(o.schema_name, o.name);
                         if (!srcCreate) {
                             console.log(`  建立資料表: ${o.schema_name}.${o.name} ✗ 無法產生 CREATE 語句`);
@@ -286,31 +262,38 @@ class ObjectService {
                         console.log(`  建立資料表: ${o.schema_name}.${o.name} ✓`);
                         successCount++;
                         totalCount++;
+                    } else {
+                        // 表格存在，執行增量修改
+                        const alterStatements = await this.generateTableAlterStatements(o.schema_name, o.name);
+                        if (alterStatements.length > 0) {
+                            let actualStatements = 0;
+                            for (const stmt of alterStatements) {
+                                // 跳過註解行
+                                if (!stmt.trim().startsWith('--')) {
+                                    this.debugLog(`執行 ALTER TABLE: ${o.schema_name}.${o.name}`, stmt);
+                                    await this.dstAdapter.executeBatch(stmt);
+                                    actualStatements++;
+                                }
+                            }
+                            if (actualStatements > 0) {
+                                console.log(`  修改資料表: ${o.schema_name}.${o.name} ✓ (${actualStatements} 個變更)`);
+                                successCount++;
+                                totalCount++;
+                            }
+                        }
                     }
                 } else {
-                    if (!o.definition) {
-                        console.log(`  建立物件: ${o.schema_name}.${o.name} ✗ 沒有定義`);
+                    const srcCreate = await this.generateTableCreateStatement(o.schema_name, o.name);
+                    if (!srcCreate) {
+                        console.log(`  建立資料表: ${o.schema_name}.${o.name} ✗ 無法產生 CREATE 語句`);
                         failureCount++;
-                        totalCount++;
                         continue;
                     }
 
-                    if (this.compareOnly) {
-                        if (!dstObjectMap) {
-                            const dstObjects = await this.dstAdapter.readObjects();
-                            dstObjectMap = new Map(dstObjects.map(d => [`${d.type}|${d.schema_name}|${d.name}`.toLowerCase(), d]));
-                        }
-                        const key = `${o.type}|${o.schema_name}|${o.name}`.toLowerCase();
-                        const dstObj = dstObjectMap.get(key);
-                        const isMissing = !dstObj;
-                        const isDifferent = dstObj && normalizeSql(dstObj.definition) !== normalizeSql(o.definition);
-                        if (!isMissing && !isDifferent) continue;
-                    }
-
-                    this.debugLog(`執行 CREATE: ${o.schema_name}.${o.name}`, o.definition.substring(0, 200) + '...');
+                    this.debugLog(`執行 CREATE TABLE: ${o.schema_name}.${o.name}`, srcCreate);
                     if (!this.dstAdapter) throw new Error('未提供目標連線');
-                    await this.dstAdapter.executeBatch(o.definition);
-                    console.log(`  建立物件: ${o.schema_name}.${o.name} ✓`);
+                    await this.dstAdapter.executeBatch(srcCreate);
+                    console.log(`  建立資料表: ${o.schema_name}.${o.name} ✓`);
                     successCount++;
                     totalCount++;
                 }
@@ -321,7 +304,219 @@ class ObjectService {
             }
         }
 
+        // 處理其他物件 (Views, Functions, Stored Procedures)
+        if (this.compareOnly) {
+            const result = await this.executeObjectAlterStatements(otherObjects, dstObjectMap, srcObjectMap);
+            totalCount += result.total;
+            successCount += result.success;
+            failureCount += result.failure;
+        } else {
+            for (const o of otherObjects) {
+                if (!o.definition) {
+                    console.log(`  建立物件: ${o.schema_name}.${o.name} ✗ 沒有定義`);
+                    failureCount++;
+                    totalCount++;
+                    continue;
+                }
+
+                try {
+                    this.debugLog(`執行 CREATE: ${o.schema_name}.${o.name}`, o.definition.substring(0, 200) + '...');
+                    if (!this.dstAdapter) throw new Error('未提供目標連線');
+                    await this.dstAdapter.executeBatch(o.definition);
+                    console.log(`  建立物件: ${o.schema_name}.${o.name} ✓`);
+                    successCount++;
+                    totalCount++;
+                } catch (err) {
+                    console.log(`  建立 ${o.schema_name}.${o.name} ✗ 失敗: ${err.message}`);
+                    failureCount++;
+                    totalCount++;
+                }
+            }
+        }
+
         console.log(`\n物件建立完成 - 觸及: ${totalCount}, 成功: ${successCount}, 失敗: ${failureCount}`);
+    }
+
+    // 新增：產生其他物件的 ALTER 語句 (Views, Functions, Stored Procedures)
+    async generateObjectAlterStatements(srcObjects, dstObjectMap, srcObjectMap) {
+        const statements = [];
+
+        try {
+            // 第一階段：刪除目標端多餘的物件（來源端沒有的）
+            const objectsToDelete = [];
+            for (const [key, dstObj] of dstObjectMap.entries()) {
+                if (!srcObjectMap.has(key) && dstObj.type !== 'U') { // 排除表格，因為已單獨處理
+                    objectsToDelete.push(dstObj);
+                }
+            }
+
+            if (objectsToDelete.length > 0) {
+                statements.push(`-- 刪除目標端多餘的物件`);
+                // 按相依性反向排序刪除
+                const deleteOrder = ['V', 'P', 'FN', 'TF', 'IF']; // View -> Procedure -> Function
+                const sortedToDelete = objectsToDelete.sort((a, b) => {
+                    const aIndex = deleteOrder.indexOf(a.type);
+                    const bIndex = deleteOrder.indexOf(b.type);
+                    return aIndex - bIndex;
+                });
+
+                for (const obj of sortedToDelete) {
+                    const typeNames = {
+                        'V': 'View', 'P': 'Procedure', 'FN': 'Function', 'TF': 'Function', 'IF': 'Function'
+                    };
+                    const typeName = typeNames[obj.type] || obj.type;
+
+                    const dropStatement = this.generateDropStatement(obj.schema_name, obj.name, obj.type);
+                    if (dropStatement) {
+                        statements.push(`-- 刪除多餘${typeName}: ${obj.schema_name}.${obj.name}`);
+                        statements.push(dropStatement);
+                        this.debugLog(`刪除多餘物件: ${obj.schema_name}.${obj.name} (${obj.type})`);
+                    }
+                }
+                statements.push('');
+            }
+
+            // 第二階段：處理需要新增或修改的物件
+            for (const obj of srcObjects) {
+                if (!obj.definition) {
+                    console.warn(`物件 ${obj.schema_name}.${obj.name} 沒有定義`);
+                    continue;
+                }
+
+                const key = `${obj.type}|${obj.schema_name}|${obj.name}`.toLowerCase();
+                const dstObj = dstObjectMap.get(key);
+                const isMissing = !dstObj;
+                const isDifferent = dstObj && normalizeSql(dstObj.definition) !== normalizeSql(obj.definition);
+
+                const typeNames = {
+                    'V': 'View', 'P': 'Procedure', 'FN': 'Function', 'TF': 'Function', 'IF': 'Function'
+                };
+                const typeName = typeNames[obj.type] || obj.type;
+
+                if (isMissing) {
+                    statements.push(`-- 新增${typeName}: ${obj.schema_name}.${obj.name}`);
+                    statements.push(obj.definition);
+                    this.debugLog(`新增物件: ${obj.schema_name}.${obj.name} (${obj.type})`);
+                } else if (isDifferent) {
+                    // 物件定義不同，需要先刪除再重新建立
+                    const dropStatement = this.generateDropStatement(obj.schema_name, obj.name, obj.type);
+                    if (dropStatement) {
+                        statements.push(`-- 重新建立${typeName}（定義不同）: ${obj.schema_name}.${obj.name}`);
+                        statements.push(dropStatement);
+                        statements.push(obj.definition);
+                        this.debugLog(`重新建立物件: ${obj.schema_name}.${obj.name} (${obj.type})`);
+                    }
+                }
+            }
+
+            return statements;
+        } catch (err) {
+            console.error(`產生物件 ALTER 語句失敗:`, err.message);
+            return statements;
+        }
+    }
+
+    // 新增：執行其他物件的 ALTER 語句
+    async executeObjectAlterStatements(srcObjects, dstObjectMap, srcObjectMap) {
+        let totalCount = 0;
+        let successCount = 0;
+        let failureCount = 0;
+
+        try {
+            // 第一階段：刪除目標端多餘的物件
+            const objectsToDelete = [];
+            for (const [key, dstObj] of dstObjectMap.entries()) {
+                if (!srcObjectMap.has(key) && dstObj.type !== 'U') { // 排除表格
+                    objectsToDelete.push(dstObj);
+                }
+            }
+
+            // 按相依性反向排序刪除
+            const deleteOrder = ['V', 'P', 'FN', 'TF', 'IF'];
+            const sortedToDelete = objectsToDelete.sort((a, b) => {
+                const aIndex = deleteOrder.indexOf(a.type);
+                const bIndex = deleteOrder.indexOf(b.type);
+                return aIndex - bIndex;
+            });
+
+            for (const obj of sortedToDelete) {
+                const typeNames = {
+                    'V': 'View', 'P': 'Procedure', 'FN': 'Function', 'TF': 'Function', 'IF': 'Function'
+                };
+                const typeName = typeNames[obj.type] || obj.type;
+                const displayInfo = `${obj.schema_name}.${obj.name}`;
+
+                try {
+                    const dropStatement = this.generateDropStatement(obj.schema_name, obj.name, obj.type);
+                    if (dropStatement) {
+                        this.debugLog(`刪除多餘物件: ${displayInfo}`, dropStatement);
+                        await this.dstAdapter.executeBatch(dropStatement);
+                        console.log(`  刪除多餘${typeName}: ${displayInfo} ✓`);
+                        successCount++;
+                    }
+                } catch (err) {
+                    console.log(`  刪除多餘${typeName}: ${displayInfo} ✗ 失敗: ${err.message}`);
+                    failureCount++;
+                }
+                totalCount++;
+            }
+
+            // 第二階段：處理需要新增或修改的物件
+            for (const obj of srcObjects) {
+                if (!obj.definition) {
+                    console.log(`  建立物件: ${obj.schema_name}.${obj.name} ✗ 沒有定義`);
+                    failureCount++;
+                    totalCount++;
+                    continue;
+                }
+
+                const key = `${obj.type}|${obj.schema_name}|${obj.name}`.toLowerCase();
+                const dstObj = dstObjectMap.get(key);
+                const isMissing = !dstObj;
+                const isDifferent = dstObj && normalizeSql(dstObj.definition) !== normalizeSql(obj.definition);
+
+                if (!isMissing && !isDifferent) continue;
+
+                const typeNames = {
+                    'V': 'View', 'P': 'Procedure', 'FN': 'Function', 'TF': 'Function', 'IF': 'Function'
+                };
+                const typeName = typeNames[obj.type] || obj.type;
+                const displayInfo = `${obj.schema_name}.${obj.name}`;
+
+                try {
+                    if (!this.dstAdapter) throw new Error('未提供目標連線');
+
+                    if (isDifferent) {
+                        // 先刪除舊物件
+                        const dropStatement = this.generateDropStatement(obj.schema_name, obj.name, obj.type);
+                        if (dropStatement) {
+                            this.debugLog(`刪除舊物件: ${displayInfo}`, dropStatement);
+                            await this.dstAdapter.executeBatch(dropStatement);
+                        }
+                    }
+
+                    // 建立新物件
+                    this.debugLog(`建立物件: ${displayInfo}`, obj.definition.substring(0, 200) + '...');
+                    await this.dstAdapter.executeBatch(obj.definition);
+
+                    if (isMissing) {
+                        console.log(`  新增${typeName}: ${displayInfo} ✓`);
+                    } else {
+                        console.log(`  重新建立${typeName}: ${displayInfo} ✓`);
+                    }
+                    successCount++;
+                } catch (err) {
+                    console.log(`  建立${typeName}: ${displayInfo} ✗ 失敗: ${err.message}`);
+                    failureCount++;
+                }
+                totalCount++;
+            }
+
+        } catch (err) {
+            console.error('執行物件 ALTER 語句失敗:', err.message);
+        }
+
+        return { total: totalCount, success: successCount, failure: failureCount };
     }
 
     // 修改：產生表格修改語句，加入刪除多餘欄位的邏輯
