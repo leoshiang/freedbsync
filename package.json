@@ -1,6 +1,6 @@
 {
   "name": "freedbsync",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "資料庫同步工具（CLI 參數版）",
   "main": "index.js",
   "bin": {
