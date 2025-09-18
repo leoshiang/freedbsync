@@ -1,6 +1,6 @@
 {
   "name": "dbsync",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "資料庫同步工具（CLI 參數版）",
   "main": "index.js",
   "bin": {
