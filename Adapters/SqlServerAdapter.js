@@ -176,6 +176,116 @@ class SqlServerAdapter extends DatabaseAdapter {
         });
     }
 
+    // 新增：取得表格欄位資訊用於比較
+    async getTableColumns(schemaName, tableName) {
+        return this.withPool(async (pool) => {
+            const sql = `
+                SELECT c.name                        AS column_name,
+                       t.name                        AS data_type,
+                       c.max_length,
+                       c.precision,
+                       c.scale,
+                       c.is_nullable,
+                       c.is_identity,
+                       c.column_id,
+                       ISNULL(ic.seed_value, 1)      AS seed_value,
+                       ISNULL(ic.increment_value, 1) AS increment_value,
+                       dc.definition                 AS default_constraint,
+                       dc.name                       AS default_constraint_name
+                FROM sys.columns c
+                         INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+                         INNER JOIN sys.objects o ON c.object_id = o.object_id
+                         INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+                         LEFT JOIN sys.identity_columns ic ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                         LEFT JOIN sys.default_constraints dc ON c.default_object_id = dc.object_id
+                WHERE s.name = @schemaName
+                  AND o.name = @tableName
+                ORDER BY c.column_id
+			`;
+
+            const {recordset} = await pool.request()
+                .input('schemaName', mssql.NVarChar, schemaName)
+                .input('tableName', mssql.NVarChar, tableName)
+                .query(sql);
+
+            return recordset || [];
+        });
+    }
+
+    // 新增：產生欄位的完整定義字串用於比較
+    formatColumnDefinition(col) {
+        let def = `[${col.column_name}] [${col.data_type}]`;
+
+        // 處理資料類型長度/精度
+        if (['varchar', 'nvarchar', 'char', 'nchar'].includes(col.data_type)) {
+            if (col.max_length === -1) {
+                def += '(MAX)';
+            } else {
+                const length = col.data_type.startsWith('n') ? col.max_length / 2 : col.max_length;
+                def += `(${length})`;
+            }
+        } else if (['decimal', 'numeric'].includes(col.data_type)) {
+            def += `(${col.precision},${col.scale})`;
+        } else if (['float'].includes(col.data_type) && col.precision !== 53) {
+            def += `(${col.precision})`;
+        } else if (['varbinary', 'binary'].includes(col.data_type) && col.max_length !== -1) {
+            def += col.max_length === -1 ? '(MAX)' : `(${col.max_length})`;
+        }
+
+        if (col.is_identity) {
+            def += ` IDENTITY(${col.seed_value},${col.increment_value})`;
+        }
+
+        def += col.is_nullable ? ' NULL' : ' NOT NULL';
+
+        if (col.default_constraint) {
+            def += ` DEFAULT ${col.default_constraint}`;
+        }
+
+        return def;
+    }
+
+    // 新增：產生 ALTER TABLE 語句來添加欄位
+    generateAddColumnStatement(schemaName, tableName, columnDefinition) {
+        return `ALTER TABLE [${schemaName}].[${tableName}] ADD ${columnDefinition}`;
+    }
+
+    // 新增：產生 ALTER TABLE 語句來修改欄位
+    generateAlterColumnStatement(schemaName, tableName, col) {
+        let def = `[${col.data_type}]`;
+
+        // 處理資料類型長度/精度
+        if (['varchar', 'nvarchar', 'char', 'nchar'].includes(col.data_type)) {
+            if (col.max_length === -1) {
+                def += '(MAX)';
+            } else {
+                const length = col.data_type.startsWith('n') ? col.max_length / 2 : col.max_length;
+                def += `(${length})`;
+            }
+        } else if (['decimal', 'numeric'].includes(col.data_type)) {
+            def += `(${col.precision},${col.scale})`;
+        } else if (['float'].includes(col.data_type) && col.precision !== 53) {
+            def += `(${col.precision})`;
+        } else if (['varbinary', 'binary'].includes(col.data_type) && col.max_length !== -1) {
+            def += col.max_length === -1 ? '(MAX)' : `(${col.max_length})`;
+        }
+
+        def += col.is_nullable ? ' NULL' : ' NOT NULL';
+
+        return `ALTER TABLE [${schemaName}].[${tableName}] ALTER COLUMN [${col.column_name}] ${def}`;
+    }
+
+    // 新增：產生刪除預設約束語句
+    generateDropDefaultConstraintStatement(schemaName, tableName, constraintName) {
+        return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
+    }
+
+    // 新增：產生添加預設約束語句
+    generateAddDefaultConstraintStatement(schemaName, tableName, columnName, defaultValue) {
+        const constraintName = `DF_${tableName}_${columnName}`;
+        return `ALTER TABLE [${schemaName}].[${tableName}] ADD CONSTRAINT [${constraintName}] DEFAULT ${defaultValue} FOR [${columnName}]`;
+    }
+
     // 約束相關操作
     async readPrimaryKeys() {
         return this.withPool(async (pool) => {
@@ -197,18 +307,15 @@ class SqlServerAdapter extends DatabaseAdapter {
 						CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ') 
 						WITHIN GROUP (ORDER BY ic.key_ordinal) + ')' AS create_statement
 				FROM sys.indexes i
-				INNER JOIN sys.tables t ON i.object_id = t.object_id
-				INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-				INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+				         INNER JOIN sys.tables t ON i.object_id = t.object_id
+				         INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+				         INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
 				WHERE i.is_primary_key = 1
-				GROUP BY 
-					i.object_id, i.index_id, i.name, i.type_desc, i.type,
-					t.schema_id, t.name
-				ORDER BY 
-					SCHEMA_NAME(t.schema_id), t.name, i.name
+				GROUP BY i.object_id, i.name, t.schema_id, t.name, i.type
+				ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
 			`;
 
-            this.debugLog('讀取 Primary Key 約束', sql);
+            this.debugLog('讀取主鍵約束', sql);
             const {recordset} = await pool.request().query(sql);
             return recordset;
         });
@@ -217,32 +324,57 @@ class SqlServerAdapter extends DatabaseAdapter {
     async readForeignKeys() {
         return this.withPool(async (pool) => {
             const sql = `
-                SELECT fk.name                   AS          constraint_name,
-                       SCHEMA_NAME(fk.schema_id) AS          schema_name,
-                       tp.name                   AS          parent_table,
-                       tr.name                   AS          referenced_table,
-                       SCHEMA_NAME(tr.schema_id) AS          referenced_schema,
-                       STRING_AGG('[' + cp.name + ']', ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS parent_columns,
-					STRING_AGG('[' + cr.name + ']', ', ') WITHIN
-                GROUP (ORDER BY fkc.constraint_column_id) AS referenced_columns,
+                SELECT fk.name COLLATE DATABASE_DEFAULT                                     AS constraint_name,
+                       SCHEMA_NAME(fk.schema_id) COLLATE DATABASE_DEFAULT                  AS schema_name,
+                       tp.name COLLATE DATABASE_DEFAULT                                    AS parent_table,
+                       tr.name COLLATE DATABASE_DEFAULT                                    AS referenced_table,
+                       SCHEMA_NAME(tr.schema_id) COLLATE DATABASE_DEFAULT                  AS referenced_schema,
+                       STRING_AGG(cp.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS parent_columns,
+                       STRING_AGG(cr.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS referenced_columns,
                     'ALTER TABLE [' + SCHEMA_NAME (fk.schema_id) + '].[' + tp.name + '] ADD CONSTRAINT [' + fk.name + '] FOREIGN KEY (' +
-                    STRING_AGG('[' + cp.name + ']', ', ') WITHIN
-                GROUP (ORDER BY fkc.constraint_column_id) +
-                    ') REFERENCES [' + SCHEMA_NAME (tr.schema_id) + '].[' + tr.name + '] (' +
-                    STRING_AGG('[' + cr.name + ']', ', ') WITHIN
-                GROUP (ORDER BY fkc.constraint_column_id) + ')' AS create_statement
+                    STRING_AGG(cp.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) + ') REFERENCES [' +
+                    SCHEMA_NAME(tr.schema_id) + '].[' + tr.name + '] (' +
+                    STRING_AGG(cr.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) + ')' AS create_statement
                 FROM sys.foreign_keys fk
-                    INNER JOIN sys.tables tp
-                ON fk.parent_object_id = tp.object_id
-                    INNER JOIN sys.tables tr ON fk.referenced_object_id = tr.object_id
-                    INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-                    INNER JOIN sys.columns cp ON fkc.parent_object_id = cp.object_id AND fkc.parent_column_id = cp.column_id
-                    INNER JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id
+                         INNER JOIN sys.tables tp ON fk.parent_object_id = tp.object_id
+                         INNER JOIN sys.tables tr ON fk.referenced_object_id = tr.object_id
+                         INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                         INNER JOIN sys.columns cp ON fkc.parent_object_id = cp.object_id AND fkc.parent_column_id = cp.column_id
+                         INNER JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id
                 GROUP BY fk.object_id, fk.name, fk.schema_id, tp.name, tr.name, tr.schema_id
-                ORDER BY SCHEMA_NAME (fk.schema_id), tp.name, fk.name
+                ORDER BY SCHEMA_NAME(fk.schema_id), tp.name, fk.name
 			`;
 
-            this.debugLog('讀取 Foreign Key 約束', sql);
+            this.debugLog('讀取外鍵約束', sql);
+            const {recordset} = await pool.request().query(sql);
+            return recordset;
+        });
+    }
+
+    async readUniqueConstraints() {
+        return this.withPool(async (pool) => {
+            const sql = `
+                SELECT kc.name COLLATE DATABASE_DEFAULT                       AS constraint_name,
+                       SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT      AS schema_name,
+                       t.name COLLATE DATABASE_DEFAULT                        AS table_name,
+                       STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS column_list,
+                               'ALTER TABLE [' + SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT + '].[' +
+                               t.name COLLATE DATABASE_DEFAULT + '] ADD CONSTRAINT [' +
+                               kc.name COLLATE DATABASE_DEFAULT + '] UNIQUE (' +
+                               STRING_AGG(c.name COLLATE DATABASE_DEFAULT +
+                                          CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ')
+                                          WITHIN GROUP (ORDER BY ic.key_ordinal) + ')' AS create_statement
+                FROM sys.key_constraints kc
+                         INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
+                         INNER JOIN sys.indexes i ON kc.parent_object_id = i.object_id AND kc.unique_index_id = i.index_id
+                         INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                         INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE kc.type = 'UQ'
+                GROUP BY kc.object_id, kc.name, t.schema_id, t.name
+                ORDER BY SCHEMA_NAME(t.schema_id), t.name, kc.name
+			`;
+
+            this.debugLog('讀取唯一約束', sql);
             const {recordset} = await pool.request().query(sql);
             return recordset;
         });
@@ -251,156 +383,50 @@ class SqlServerAdapter extends DatabaseAdapter {
     // 索引相關操作
     async readIndexes() {
         return this.withPool(async (pool) => {
-            const {recordset} = await pool.request().query(`
-                SELECT i.name                                            AS index_name,
-                       SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT AS schema_name,
-                       t.name COLLATE DATABASE_DEFAULT                   AS table_name,
-                       i.type_desc,
+            const sql = `
+                SELECT i.name COLLATE DATABASE_DEFAULT                      AS index_name,
+                       SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT    AS schema_name,
+                       t.name COLLATE DATABASE_DEFAULT                      AS table_name,
+                       CASE i.type
+                           WHEN 1 THEN 'CLUSTERED'
+                           WHEN 2 THEN 'NONCLUSTERED'
+                           ELSE 'OTHER' END                                  AS index_type,
                        i.is_unique,
-                       i.is_primary_key,
-                       i.is_unique_constraint,
-                       CASE
-                           WHEN i.is_primary_key = 1 THEN NULL
-                           WHEN i.is_unique_constraint = 1 THEN
-                               'ALTER TABLE [' + SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT + '].[' +
-                               t.name COLLATE DATABASE_DEFAULT + '] ADD CONSTRAINT [' +
-                               i.name COLLATE DATABASE_DEFAULT + '] UNIQUE ' +
-                               CASE i.type WHEN 1 THEN 'CLUSTERED' ELSE 'NONCLUSTERED' END + ' (' +
-                               STRING_AGG(c.name COLLATE DATABASE_DEFAULT +
-                                          CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ')
-                               WITHIN
-                GROUP (ORDER BY ic.key_ordinal) + ')'
-                    ELSE
-                    'CREATE ' +
-                    CASE WHEN i.is_unique = 1 THEN 'UNIQUE ' ELSE ''
-                END
-                +
-						   CASE i.type WHEN 1 THEN 'CLUSTERED' ELSE 'NONCLUSTERED'
-                END
-                + 
-						   ' INDEX [' + i.name COLLATE DATABASE_DEFAULT + '] ON [' + 
-						   SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT + '].[' + 
-						   t.name COLLATE DATABASE_DEFAULT + '] (' +
-						   STRING_AGG(c.name COLLATE DATABASE_DEFAULT + 
-							   CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ') 
-							   WITHIN GROUP (ORDER BY ic.key_ordinal) + ')'
-                END
-                AS create_statement
-				FROM sys.indexes i
-				INNER JOIN sys.tables t ON i.object_id = t.object_id
-				INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-				INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-				WHERE i.type > 0 AND i.is_hypothetical = 0 AND i.is_disabled = 0 AND i.is_primary_key = 0
-				GROUP BY 
-					i.object_id, i.index_id, i.name, i.type_desc, i.type,
-					i.is_unique, i.is_primary_key, i.is_unique_constraint,
-					t.schema_id, t.name
-				ORDER BY 
-					SCHEMA_NAME(t.schema_id), t.name, 
-					CASE WHEN i.is_unique_constraint = 1 THEN 1 ELSE 2
-                END
-                ,
-					i.name
-			`);
-            return recordset.filter(r => r.create_statement !== null);
-        });
-    }
-
-    // 資料相關操作
-    async readTables() {
-        return this.withPool(async (pool) => {
-            const {recordset} = await pool.request().query(`
-                SELECT s.name AS schema_name, t.name AS table_name
-                FROM sys.tables t
-                         JOIN sys.schemas s ON t.schema_id = s.schema_id
-                WHERE s.name NOT IN ('sys', 'information_schema')
-                ORDER BY s.name, t.name
-			`);
-            return recordset;
-        });
-    }
-
-    async readTableData(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const {recordset} = await pool.request().query(
-                `SELECT *
-                 FROM [${schemaName}].[${tableName}]`
-            );
-            return recordset;
-        });
-    }
-
-    async readTableDataCount(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const {recordset} = await pool.request().query(
-                `SELECT COUNT(*) as total
-                 FROM [${schemaName}].[${tableName}]`
-            );
-            return recordset[0].total;
-        });
-    }
-
-    async checkIdentityColumn(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const {recordset} = await pool.request()
-                .input('schemaName', mssql.NVarChar, schemaName)
-                .input('tableName', mssql.NVarChar, tableName)
-                .query(`
-                    SELECT COUNT(*) as identity_count
-                    FROM sys.columns c
-                             INNER JOIN sys.objects o ON c.object_id = o.object_id
-                             INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
-                    WHERE s.name = @schemaName
-                      AND o.name = @tableName
-                      AND c.is_identity = 1
-				`);
-
-            return recordset[0].identity_count > 0;
-        });
-    }
-
-    // 清理相關操作
-    async readExistingForeignKeys() {
-        return this.withPool(async (pool) => {
-            const {recordset} = await pool.request().query(`
-                SELECT fk.name                   AS constraint_name,
-                       SCHEMA_NAME(fk.schema_id) AS schema_name,
-                       tp.name                   AS parent_table
-                FROM sys.foreign_keys fk
-                         INNER JOIN sys.tables tp ON fk.parent_object_id = tp.object_id
-                ORDER BY SCHEMA_NAME(fk.schema_id), tp.name, fk.name
-			`);
-            return recordset;
-        });
-    }
-
-    async readExistingIndexes() {
-        return this.withPool(async (pool) => {
-            const {recordset} = await pool.request().query(`
-                SELECT i.name                   AS index_name,
-                       SCHEMA_NAME(t.schema_id) AS schema_name,
-                       t.name                   AS table_name
+                       STRING_AGG(c.name + CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ')
+                                    WITHIN GROUP (ORDER BY ic.key_ordinal) AS column_list,
+                       'CREATE ' + CASE WHEN i.is_unique = 1 THEN 'UNIQUE ' ELSE '' END +
+                       CASE i.type WHEN 1 THEN 'CLUSTERED' WHEN 2 THEN 'NONCLUSTERED' ELSE '' END +
+                       ' INDEX [' + i.name + '] ON [' + SCHEMA_NAME(t.schema_id) + '].[' + t.name + '] (' +
+                       STRING_AGG(c.name + CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END, ', ')
+                                    WITHIN GROUP (ORDER BY ic.key_ordinal) + ')' AS create_statement
                 FROM sys.indexes i
                          INNER JOIN sys.tables t ON i.object_id = t.object_id
+                         INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                         INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
                 WHERE i.is_primary_key = 0
+                  AND i.is_unique_constraint = 0
                   AND i.type > 0
                   AND i.name IS NOT NULL
+                GROUP BY i.object_id, i.name, t.schema_id, t.name, i.type, i.is_unique
                 ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
-			`);
+			`;
+
+            this.debugLog('讀取索引', sql);
+            const {recordset} = await pool.request().query(sql);
             return recordset;
         });
     }
 
+    // 清理相關操作 - 讀取現有物件以便刪除
     async readExistingObjects() {
         return this.withPool(async (pool) => {
-            const {recordset} = await pool.request().query(`
-                SELECT o.object_id,
-                       RTRIM(o.type) AS type,
+            const sql = `
+                SELECT RTRIM(o.type) AS type,
                        RTRIM(s.name) AS schema_name,
                        RTRIM(o.name) AS name
                 FROM sys.objects o
                          JOIN sys.schemas s ON s.schema_id = o.schema_id
-                WHERE RTRIM(o.type) IN ('U', 'V', 'P', 'FN', 'TF', 'IF')
+                WHERE RTRIM(o.type) IN ('FN', 'TF', 'IF', 'P', 'V', 'U')
                 ORDER BY CASE RTRIM(o.type)
                              WHEN 'FN' THEN 1
                              WHEN 'TF' THEN 1
@@ -408,57 +434,120 @@ class SqlServerAdapter extends DatabaseAdapter {
                              WHEN 'P' THEN 2
                              WHEN 'V' THEN 3
                              WHEN 'U' THEN 4
-                             END DESC,
-                         s.name, o.name
-			`);
+                             END, s.name, o.name
+			`;
+
+            this.debugLog('讀取現有物件', sql);
+            const {recordset} = await pool.request().query(sql);
             return recordset;
         });
     }
 
-    // SQL 語句產生
-    generateDropForeignKeyStatement(schemaName, tableName, constraintName) {
-        return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
+    async readExistingForeignKeys() {
+        return this.withPool(async (pool) => {
+            const sql = `
+                SELECT fk.name COLLATE DATABASE_DEFAULT                    AS constraint_name,
+                       SCHEMA_NAME(fk.schema_id) COLLATE DATABASE_DEFAULT AS schema_name,
+                       tp.name COLLATE DATABASE_DEFAULT                   AS parent_table
+                FROM sys.foreign_keys fk
+                         INNER JOIN sys.tables tp ON fk.parent_object_id = tp.object_id
+                ORDER BY SCHEMA_NAME(fk.schema_id), tp.name, fk.name
+			`;
+
+            this.debugLog('讀取現有外鍵約束', sql);
+            const {recordset} = await pool.request().query(sql);
+            return recordset;
+        });
     }
 
-    generateDropIndexStatement(schemaName, tableName, indexName) {
-        return `DROP INDEX [${indexName}] ON [${schemaName}].[${tableName}]`;
+    async readExistingIndexes() {
+        return this.withPool(async (pool) => {
+            const sql = `
+                SELECT i.name COLLATE DATABASE_DEFAULT                   AS index_name,
+                       SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT AS schema_name,
+                       t.name COLLATE DATABASE_DEFAULT                   AS table_name
+                FROM sys.indexes i
+                         INNER JOIN sys.tables t ON i.object_id = t.object_id
+                WHERE i.is_primary_key = 0
+                  AND i.is_unique_constraint = 0
+                  AND i.type > 0
+                  AND i.name IS NOT NULL
+                ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
+			`;
+
+            this.debugLog('讀取現有索引', sql);
+            const {recordset} = await pool.request().query(sql);
+            return recordset;
+        });
     }
 
-    generateDropObjectStatement(schemaName, objectName, objectType) {
-        const fullName = `[${schemaName}].[${objectName}]`;
+    // 資料相關操作
+    async readTableData(schemaName, tableName) {
+        return this.withPool(async (pool) => {
+            const sql = `SELECT * FROM [${schemaName}].[${tableName}]`;
 
-        switch (objectType.trim()) {
-            case 'U':
-                return `IF OBJECT_ID('${schemaName}.${objectName}', 'U') IS NOT NULL DROP TABLE ${fullName}`;
-            case 'V':
-                return `IF OBJECT_ID('${schemaName}.${objectName}', 'V') IS NOT NULL DROP VIEW ${fullName}`;
-            case 'P':
-                return `IF OBJECT_ID('${schemaName}.${objectName}', 'P') IS NOT NULL DROP PROCEDURE ${fullName}`;
-            case 'FN':
-                return `IF OBJECT_ID('${schemaName}.${objectName}', 'FN') IS NOT NULL DROP FUNCTION ${fullName}`;
-            case 'TF':
-                return `IF OBJECT_ID('${schemaName}.${objectName}', 'TF') IS NOT NULL DROP FUNCTION ${fullName}`;
-            case 'IF':
-                return `IF OBJECT_ID('${schemaName}.${objectName}', 'IF') IS NOT NULL DROP FUNCTION ${fullName}`;
-            default:
-                return null;
-        }
+            this.debugLog(`讀取資料表資料: ${schemaName}.${tableName}`, sql);
+
+            const {recordset} = await pool.request().query(sql);
+            return recordset;
+        });
     }
 
-    generateBatchInserts(tableName, rows, hasIdentityColumn = false, batchSize = 1000) {
-        if (!rows || rows.length === 0) return [];
+    async readTableColumns(schemaName, tableName) {
+        return this.withPool(async (pool) => {
+            const sql = `
+                SELECT c.name AS column_name,
+                       c.is_identity
+                FROM sys.columns c
+                         INNER JOIN sys.objects o ON c.object_id = o.object_id
+                         INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+                WHERE s.name = @schemaName
+                  AND o.name = @tableName
+                ORDER BY c.column_id
+			`;
 
-        const safeTableName = this.escapeTableName(tableName);
-        const columns = Object.keys(rows[0]);
-        const columnList = columns.map(col => this.escapeIdentifier(col)).join(', ');
+            this.debugLog(`讀取資料表欄位: ${schemaName}.${tableName}`, sql);
 
+            const {recordset} = await pool.request()
+                .input('schemaName', mssql.NVarChar, schemaName)
+                .input('tableName', mssql.NVarChar, tableName)
+                .query(sql);
+
+            return recordset;
+        });
+    }
+
+    async getTables() {
+        return this.withPool(async (pool) => {
+            const sql = `
+                SELECT SCHEMA_NAME(schema_id) AS schema_name,
+                       name                   AS table_name
+                FROM sys.tables
+                ORDER BY SCHEMA_NAME(schema_id), name
+			`;
+
+            this.debugLog('讀取資料表清單', sql);
+            const {recordset} = await pool.request().query(sql);
+            return recordset;
+        });
+    }
+
+    generateDataInsertBatches(schemaName, tableName, data, columns, batchSize = 1000) {
         const batches = [];
+        const safeTableName = `[${schemaName}].[${tableName}]`;
 
-        for (let i = 0; i < rows.length; i += batchSize) {
-            const batch = rows.slice(i, i + batchSize);
+        const columnList = columns.map(c => `[${c.column_name}]`).join(', ');
+        const hasIdentityColumn = columns.some(c => c.is_identity);
+
+        for (let i = 0; i < data.length; i += batchSize) {
+            const batch = data.slice(i, i + batchSize);
 
             const valuesList = batch.map(row => {
-                const values = columns.map(col => this.escapeValue(row[col])).join(', ');
+                const values = columns.map(col => {
+                    const value = row[col.column_name];
+                    return this.escapeValue(value);
+                }).join(', ');
+
                 return `(${values})`;
             }).join(',\n    ');
 
@@ -480,6 +569,35 @@ class SqlServerAdapter extends DatabaseAdapter {
         }
 
         return batches;
+    }
+
+    // DROP 語句產生
+    generateDropObjectStatement(schemaName, objectName, objectType) {
+        const typeMap = {
+            'U': 'TABLE',
+            'V': 'VIEW',
+            'P': 'PROCEDURE',
+            'FN': 'FUNCTION',
+            'TF': 'FUNCTION',
+            'IF': 'FUNCTION'
+        };
+
+        const dropType = typeMap[objectType];
+        if (!dropType) {
+            console.warn(`未知的物件類型: ${objectType}`);
+            return null;
+        }
+
+        return `IF EXISTS (SELECT 1 FROM sys.objects WHERE name = '${objectName}' AND schema_id = SCHEMA_ID('${schemaName}'))
+    DROP ${dropType} [${schemaName}].[${objectName}]`;
+    }
+
+    generateDropForeignKeyStatement(schemaName, tableName, constraintName) {
+        return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
+    }
+
+    generateDropIndexStatement(schemaName, tableName, indexName) {
+        return `DROP INDEX [${indexName}] ON [${schemaName}].[${tableName}]`;
     }
 
     // 執行 SQL

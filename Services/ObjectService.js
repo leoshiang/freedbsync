@@ -134,43 +134,49 @@ class ObjectService {
                 this.pushSql(`-- CREATE 物件 (依相依性正向順序)\n`);
                 this.pushSql(`-- =============================================\n\n`);
             } else {
-                this.pushSql(`-- 比較模式：僅產生目標不存在或定義不同的物件 CREATE 語句\n`);
+                this.pushSql(`-- 比較模式：僅產生目標不存在或定義不同的物件 CREATE/ALTER 語句\n`);
                 this.pushSql(`-- =============================================\n\n`);
             }
 
             // 資料表
             if (tables.length > 0) {
-                console.log('產生資料表 CREATE 語句...');
+                console.log('產生資料表 CREATE/ALTER 語句...');
                 for (const table of tables) {
                     try {
-                        const srcCreate = await this.generateTableCreateStatement(table.schema_name, table.name);
-                        if (!srcCreate) {
-                            console.warn(`無法產生資料表 ${table.schema_name}.${table.name} 的 CREATE 語句`);
-                            continue;
-                        }
-
                         if (this.compareOnly) {
                             const key = `U|${table.schema_name}|${table.name}`.toLowerCase();
-                            let shouldEmit = false;
                             if (!dstObjectMap.has(key)) {
-                                shouldEmit = true; // 目標端不存在
+                                // 表格不存在，建立完整表格
+                                const srcCreate = await this.generateTableCreateStatement(table.schema_name, table.name);
+                                if (srcCreate) {
+                                    this.pushSql(`-- 建立新資料表 ${table.schema_name}.${table.name}\n`);
+                                    this.pushSql(`${srcCreate};\n`);
+                                    this.pushSql(`GO\n\n`);
+                                }
                             } else {
-                                // 目標端也生成 CREATE 再比對
-                                const dstCreate = await this.dstAdapter.generateTableCreateStatement(table.schema_name, table.name);
-                                if (!dstCreate) {
-                                    shouldEmit = true;
-                                } else if (normalizeSql(srcCreate) !== normalizeSql(dstCreate)) {
-                                    shouldEmit = true;
+                                // 表格存在，比較欄位差異
+                                const alterStatements = await this.generateTableAlterStatements(table.schema_name, table.name);
+                                if (alterStatements.length > 0) {
+                                    this.pushSql(`-- 修改資料表 ${table.schema_name}.${table.name} 結構\n`);
+                                    alterStatements.forEach(stmt => {
+                                        this.pushSql(`${stmt};\n`);
+                                        this.pushSql(`GO\n\n`);
+                                    });
                                 }
                             }
-                            if (!shouldEmit) continue;
-                        }
+                        } else {
+                            const srcCreate = await this.generateTableCreateStatement(table.schema_name, table.name);
+                            if (!srcCreate) {
+                                console.warn(`無法產生資料表 ${table.schema_name}.${table.name} 的 CREATE 語句`);
+                                continue;
+                            }
 
-                        this.pushSql(`-- 建立資料表 ${table.schema_name}.${table.name}\n`);
-                        this.pushSql(`${srcCreate};\n`);
-                        this.pushSql(`GO\n\n`);
+                            this.pushSql(`-- 建立資料表 ${table.schema_name}.${table.name}\n`);
+                            this.pushSql(`${srcCreate};\n`);
+                            this.pushSql(`GO\n\n`);
+                        }
                     } catch (err) {
-                        console.error(`產生資料表 ${table.schema_name}.${table.name} CREATE 語句失敗:`, err.message);
+                        console.error(`產生資料表 ${table.schema_name}.${table.name} CREATE/ALTER 語句失敗:`, err.message);
                     }
                 }
             }
@@ -223,27 +229,51 @@ class ObjectService {
         for (const o of sortedObjs) {
             try {
                 if (o.type === 'U') {
-                    const srcCreate = await this.generateTableCreateStatement(o.schema_name, o.name);
-                    if (!srcCreate) {
-                        console.log(`  建立資料表: ${o.schema_name}.${o.name} ✗ 無法產生 CREATE 語句`);
-                        failureCount++;
-                        continue;
-                    }
-
                     if (this.compareOnly) {
-                        if (!this.dstAdapter) throw new Error('比較模式需要目標連線');
-                        const dstCreate = await this.dstAdapter.generateTableCreateStatement(o.schema_name, o.name);
-                        const isMissing = !dstCreate;
-                        const isDifferent = dstCreate && normalizeSql(dstCreate) !== normalizeSql(srcCreate);
-                        if (!isMissing && !isDifferent) continue;
-                    }
+                        const key = `U|${o.schema_name}|${o.name}`.toLowerCase();
+                        if (!dstObjectMap.has(key)) {
+                            // 表格不存在，建立完整表格
+                            const srcCreate = await this.generateTableCreateStatement(o.schema_name, o.name);
+                            if (!srcCreate) {
+                                console.log(`  建立資料表: ${o.schema_name}.${o.name} ✗ 無法產生 CREATE 語句`);
+                                failureCount++;
+                                continue;
+                            }
 
-                    this.debugLog(`執行 CREATE TABLE: ${o.schema_name}.${o.name}`, srcCreate);
-                    if (!this.dstAdapter) throw new Error('未提供目標連線');
-                    await this.dstAdapter.executeBatch(srcCreate);
-                    console.log(`  建立資料表: ${o.schema_name}.${o.name} ✓`);
-                    successCount++;
-                    totalCount++;
+                            this.debugLog(`執行 CREATE TABLE: ${o.schema_name}.${o.name}`, srcCreate);
+                            if (!this.dstAdapter) throw new Error('未提供目標連線');
+                            await this.dstAdapter.executeBatch(srcCreate);
+                            console.log(`  建立資料表: ${o.schema_name}.${o.name} ✓`);
+                            successCount++;
+                            totalCount++;
+                        } else {
+                            // 表格存在，執行增量修改
+                            const alterStatements = await this.generateTableAlterStatements(o.schema_name, o.name);
+                            if (alterStatements.length > 0) {
+                                for (const stmt of alterStatements) {
+                                    this.debugLog(`執行 ALTER TABLE: ${o.schema_name}.${o.name}`, stmt);
+                                    await this.dstAdapter.executeBatch(stmt);
+                                }
+                                console.log(`  修改資料表: ${o.schema_name}.${o.name} ✓ (${alterStatements.length} 個變更)`);
+                                successCount++;
+                                totalCount++;
+                            }
+                        }
+                    } else {
+                        const srcCreate = await this.generateTableCreateStatement(o.schema_name, o.name);
+                        if (!srcCreate) {
+                            console.log(`  建立資料表: ${o.schema_name}.${o.name} ✗ 無法產生 CREATE 語句`);
+                            failureCount++;
+                            continue;
+                        }
+
+                        this.debugLog(`執行 CREATE TABLE: ${o.schema_name}.${o.name}`, srcCreate);
+                        if (!this.dstAdapter) throw new Error('未提供目標連線');
+                        await this.dstAdapter.executeBatch(srcCreate);
+                        console.log(`  建立資料表: ${o.schema_name}.${o.name} ✓`);
+                        successCount++;
+                        totalCount++;
+                    }
                 } else {
                     if (!o.definition) {
                         console.log(`  建立物件: ${o.schema_name}.${o.name} ✗ 沒有定義`);
@@ -279,6 +309,140 @@ class ObjectService {
         }
 
         console.log(`\n物件建立完成 - 觸及: ${totalCount}, 成功: ${successCount}, 失敗: ${failureCount}`);
+    }
+
+    // 新增：產生表格修改語句
+    async generateTableAlterStatements(schemaName, tableName) {
+        const statements = [];
+
+        try {
+            // 取得來源和目標的欄位資訊
+            const srcColumns = await this.srcAdapter.getTableColumns(schemaName, tableName);
+            const dstColumns = await this.dstAdapter.getTableColumns(schemaName, tableName);
+
+            if (!srcColumns || srcColumns.length === 0) {
+                return statements;
+            }
+
+            // 建立目標欄位的對照表
+            const dstColumnMap = new Map();
+            if (dstColumns) {
+                dstColumns.forEach(col => {
+                    dstColumnMap.set(col.column_name.toLowerCase(), col);
+                });
+            }
+
+            // 比較每個來源欄位
+            for (const srcCol of srcColumns) {
+                const colName = srcCol.column_name.toLowerCase();
+                const dstCol = dstColumnMap.get(colName);
+
+                if (!dstCol) {
+                    // 欄位不存在，需要新增
+                    const colDef = this.srcAdapter.formatColumnDefinition(srcCol);
+                    const addStmt = this.srcAdapter.generateAddColumnStatement(schemaName, tableName, colDef);
+                    statements.push(addStmt);
+
+                    this.debugLog(`新增欄位: ${schemaName}.${tableName}.${srcCol.column_name}`);
+                } else {
+                    // 欄位存在，比較是否需要修改
+                    const differences = this.getColumnDifferences(srcCol, dstCol);
+                    if (differences.length > 0) {
+                        // 處理預設約束的變更
+                        if (differences.includes('default_constraint')) {
+                            // 先刪除舊的預設約束
+                            if (dstCol.default_constraint_name) {
+                                const dropDefaultStmt = this.srcAdapter.generateDropDefaultConstraintStatement(
+                                    schemaName, tableName, dstCol.default_constraint_name
+                                );
+                                statements.push(dropDefaultStmt);
+                            }
+                        }
+
+                        // 注意：IDENTITY 欄位無法用 ALTER COLUMN 修改，可能需要特殊處理
+                        if (srcCol.is_identity || dstCol.is_identity) {
+                            if (differences.includes('identity')) {
+                                console.warn(`警告：IDENTITY 欄位 ${schemaName}.${tableName}.${srcCol.column_name} 無法直接修改，請手動處理`);
+                            } else {
+                                // 只是其他屬性變更，仍可嘗試修改
+                                const alterStmt = this.srcAdapter.generateAlterColumnStatement(schemaName, tableName, srcCol);
+                                statements.push(alterStmt);
+                            }
+                        } else {
+                            const alterStmt = this.srcAdapter.generateAlterColumnStatement(schemaName, tableName, srcCol);
+                            statements.push(alterStmt);
+                        }
+
+                        // 處理預設約束的新增
+                        if (differences.includes('default_constraint') && srcCol.default_constraint) {
+                            const addDefaultStmt = this.srcAdapter.generateAddDefaultConstraintStatement(
+                                schemaName, tableName, srcCol.column_name, srcCol.default_constraint
+                            );
+                            statements.push(addDefaultStmt);
+                        }
+
+                        this.debugLog(`修改欄位: ${schemaName}.${tableName}.${srcCol.column_name}，差異: ${differences.join(', ')}`);
+                    }
+                }
+            }
+
+            return statements;
+        } catch (err) {
+            console.error(`產生表格 ${schemaName}.${tableName} ALTER 語句失敗:`, err.message);
+            return statements;
+        }
+    }
+
+    // 新增：比較兩個欄位的差異並返回差異類型
+    getColumnDifferences(srcCol, dstCol) {
+        const differences = [];
+
+        // 比較資料類型
+        if (srcCol.data_type !== dstCol.data_type) {
+            differences.push('data_type');
+        }
+
+        // 比較長度
+        if (srcCol.max_length !== dstCol.max_length) {
+            differences.push('max_length');
+        }
+
+        // 比較精度和小數位數
+        if (srcCol.precision !== dstCol.precision) {
+            differences.push('precision');
+        }
+        if (srcCol.scale !== dstCol.scale) {
+            differences.push('scale');
+        }
+
+        // 比較是否允許 NULL
+        if (srcCol.is_nullable !== dstCol.is_nullable) {
+            differences.push('nullable');
+        }
+
+        // 比較 IDENTITY 設定
+        if (srcCol.is_identity !== dstCol.is_identity) {
+            differences.push('identity');
+        }
+        if (srcCol.is_identity && dstCol.is_identity) {
+            if (srcCol.seed_value !== dstCol.seed_value || srcCol.increment_value !== dstCol.increment_value) {
+                differences.push('identity');
+            }
+        }
+
+        // 比較預設約束（簡單比較，可能需要更精密的處理）
+        const srcDefault = normalizeSql(srcCol.default_constraint || '');
+        const dstDefault = normalizeSql(dstCol.default_constraint || '');
+        if (srcDefault !== dstDefault) {
+            differences.push('default_constraint');
+        }
+
+        return differences;
+    }
+
+    // 新增：比較兩個欄位是否不同（保留原有方法以確保相容性）
+    isColumnDifferent(srcCol, dstCol) {
+        return this.getColumnDifferences(srcCol, dstCol).length > 0;
     }
 }
 
