@@ -1,9 +1,7 @@
-const DatabaseConfig = require('../Config/DatabaseConfig');
-
 class DataService {
-    constructor(sqlBuffer = null, debug = false) {
-        this.srcAdapter = DatabaseConfig.createSrcAdapter(debug);
-        this.dstAdapter = DatabaseConfig.createDstAdapter(debug);
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+        this.srcAdapter = srcAdapter;
+        this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
@@ -36,16 +34,12 @@ class DataService {
 
     async readTableDataWithCount(schemaName, tableName) {
         try {
-            // 先取得總筆數
             const totalRows = await this.readTableDataCount(schemaName, tableName);
-
-            // 取得資料
             const data = await this.readTableData(schemaName, tableName);
-
-            return {data, totalRows};
+            return { data, totalRows };
         } catch (err) {
             console.error(`\n讀取資料表 ${schemaName}.${tableName} 失敗:`, err.message);
-            return {data: [], totalRows: 0};
+            return { data: [], totalRows: 0 };
         }
     }
 
@@ -74,7 +68,6 @@ class DataService {
                 this.pushSql(`-- =============================================\n\n`);
             }
 
-            // 逐表處理：在每一個表轉換時計算該表的數量
             let processedTables = 0;
             let successTables = 0;
             let failureTables = 0;
@@ -85,10 +78,7 @@ class DataService {
                 processedTables++;
 
                 try {
-                    // 檢查是否有 IDENTITY 欄位
                     const hasIdentityColumn = await this.checkIdentityColumn(table.schema_name, table.table_name);
-
-                    // 計算該表資料量
                     const totalRows = await this.readTableDataCount(table.schema_name, table.table_name);
                     const identityNote = hasIdentityColumn ? ' [含 IDENTITY 欄位]' : '';
 
@@ -98,17 +88,15 @@ class DataService {
                         continue;
                     }
 
-                    // 讀取資料
                     const data = await this.readTableData(table.schema_name, table.table_name);
 
                     if (this.isDryRun) {
-                        // Dry-run：輸出 SQL 腳本
                         this.pushSql(`-- 複製資料到 ${tableName} (${totalRows.toLocaleString()} 筆)${identityNote}\n`);
                         const batches = this.srcAdapter.generateBatchInserts(
                             tableName,
                             data,
                             hasIdentityColumn,
-                            1000 // 批次大小
+                            1000
                         );
                         batches.forEach(batch => {
                             this.pushSql(`${batch}\nGO\n\n`);
@@ -116,15 +104,15 @@ class DataService {
                         console.log(`  ${tableName}: 預覽 ${totalRows.toLocaleString()} 筆資料${identityNote} ✓ 完成`);
                         successTables++;
                     } else {
-                        // 實際執行：插入資料
                         const batches = this.srcAdapter.generateBatchInserts(
                             tableName,
                             data,
                             hasIdentityColumn,
-                            1000 // 批次大小
+                            1000
                         );
 
                         for (const batch of batches) {
+                            if (!this.dstAdapter) throw new Error('未提供目標連線');
                             await this.dstAdapter.executeQuery(batch);
                         }
 

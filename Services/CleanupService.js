@@ -1,9 +1,7 @@
-const DatabaseConfig = require('../Config/DatabaseConfig');
-
 class CleanupService {
-    constructor(sqlBuffer = null, debug = false) {
-        this.srcAdapter = DatabaseConfig.createSrcAdapter(debug);
-        this.dstAdapter = DatabaseConfig.createDstAdapter(debug);
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+        this.srcAdapter = srcAdapter;
+        this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
@@ -29,7 +27,6 @@ class CleanupService {
                 this.pushSql(`-- 清理現有物件\n`);
                 this.pushSql(`-- =============================================\n\n`);
 
-                // 產生通用的清理腳本
                 this.pushSql(`-- 1. 刪除所有 Foreign Key 約束\n`);
                 this.pushSql(`DECLARE @sql NVARCHAR(MAX) = ''  `);
                 this.pushSql(`SELECT @sql = @sql + 'ALTER TABLE [' + SCHEMA_NAME(fk.schema_id) + '].[' + tp.name + '] DROP CONSTRAINT [' + fk.name + '];' + CHAR(13)\n`);
@@ -87,6 +84,7 @@ class CleanupService {
             let failureCount = 0;
 
             // 1. 先刪除 Foreign Key 約束
+            if (!this.dstAdapter) throw new Error('未提供目標連線');
             const foreignKeys = await this.dstAdapter.readExistingForeignKeys();
             if (foreignKeys.length > 0) {
                 console.log(`刪除 ${foreignKeys.length} 個 Foreign Key 約束...`);

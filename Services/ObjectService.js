@@ -1,10 +1,9 @@
-const DatabaseConfig = require('../Config/DatabaseConfig');
-const {Graph, alg} = require('graphlib');
+const { Graph, alg } = require('graphlib');
 
 class ObjectService {
-    constructor(sqlBuffer = null, debug = false) {
-        this.srcAdapter = DatabaseConfig.createSrcAdapter(debug);
-        this.dstAdapter = DatabaseConfig.createDstAdapter(debug);
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+        this.srcAdapter = srcAdapter;
+        this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
@@ -35,30 +34,22 @@ class ObjectService {
         return await this.srcAdapter.generateTableCreateStatement(schemaName, tableName);
     }
 
-    /**
-     * 產生 DROP 語句 (用於 Dry-run 模式)
-     */
     generateDropStatement(schemaName, objectName, objectType) {
-        // 可以委派給 adapter，或者保持通用邏輯
         return this.srcAdapter.generateDropObjectStatement(schemaName, objectName, objectType);
     }
 
     async sortByDependency() {
-        // 讀取所有物件
         const objects = await this.readObjects();
         console.log(`發現 ${objects.length} 個資料庫物件`);
 
-        // 統計各類型物件數量
         const typeCount = {};
         objects.forEach(o => {
             typeCount[o.type] = (typeCount[o.type] || 0) + 1;
         });
         console.log('物件統計:', typeCount);
 
-        // 讀取相依關係
         const deps = await this.readObjectDependencies();
 
-        // 建立圖形
         const graph = new Graph();
         objects.forEach(o => graph.setNode(o.object_id, o));
         deps.forEach(d => {
@@ -67,7 +58,6 @@ class ObjectService {
             }
         });
 
-        // 處理循環相依性
         if (!alg.isAcyclic(graph)) {
             const cycles = alg.findCycles(graph);
             console.warn(`警告：偵測到 ${cycles.length} 個循環相依性，將移除循環邊緣`);
@@ -82,7 +72,6 @@ class ObjectService {
             });
         }
 
-        // 拓樸排序
         const sortedIds = alg.topsort(graph);
         return sortedIds.map(id => graph.node(id));
     }
@@ -97,11 +86,9 @@ class ObjectService {
             this.pushSql(`-- 建立資料庫物件 (不包含 Foreign Key 和 Index)\n`);
             this.pushSql(`-- =============================================\n\n`);
 
-            // 先產生 DROP 語句（按相依性反向順序）
             this.pushSql(`-- DROP 現有物件 (依相依性反向順序)\n`);
             this.pushSql(`-- =============================================\n\n`);
 
-            // 反向順序 DROP（依賴者先 DROP）
             const reversedObjects = [...sortedObjs].reverse();
 
             for (const obj of reversedObjects) {
@@ -127,7 +114,6 @@ class ObjectService {
             this.pushSql(`-- CREATE 物件 (依相依性正向順序)\n`);
             this.pushSql(`-- =============================================\n\n`);
 
-            // 先處理所有資料表
             if (tables.length > 0) {
                 console.log('產生資料表 CREATE 語句...');
                 for (const table of tables) {
@@ -146,7 +132,6 @@ class ObjectService {
                 }
             }
 
-            // 再處理其他物件
             if (otherObjects.length > 0) {
                 console.log('產生其他物件 CREATE 語句...');
                 for (const obj of otherObjects) {
@@ -167,7 +152,6 @@ class ObjectService {
             return;
         }
 
-        // 實際執行模式
         console.log('步驟 2b: CREATE 物件（依相依性正向順序）');
 
         let totalCount = sortedObjs.length;
@@ -176,13 +160,13 @@ class ObjectService {
 
         for (const o of sortedObjs) {
             if (o.type === 'U') {
-                // 資料表：CREATE TABLE
                 console.log(`  建立資料表: ${o.schema_name}.${o.name}`);
 
                 try {
                     const tableCreateStatement = await this.generateTableCreateStatement(o.schema_name, o.name);
                     if (tableCreateStatement) {
                         this.debugLog(`執行 CREATE TABLE: ${o.schema_name}.${o.name}`, tableCreateStatement);
+                        if (!this.dstAdapter) throw new Error('未提供目標連線');
                         await this.dstAdapter.executeBatch(tableCreateStatement);
                         successCount++;
                     } else {
@@ -194,7 +178,6 @@ class ObjectService {
                     failureCount++;
                 }
             } else {
-                // 其他物件：CREATE
                 const typeNames = {
                     'V': '檢視表', 'P': '預存程序', 'FN': '函數', 'TF': '函數', 'IF': '函數'
                 };
@@ -204,6 +187,7 @@ class ObjectService {
                 if (o.definition) {
                     try {
                         this.debugLog(`執行 CREATE: ${o.schema_name}.${o.name}`, o.definition.substring(0, 200) + '...');
+                        if (!this.dstAdapter) throw new Error('未提供目標連線');
                         await this.dstAdapter.executeBatch(o.definition);
                         successCount++;
                     } catch (err) {

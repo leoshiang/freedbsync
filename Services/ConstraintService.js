@@ -1,9 +1,7 @@
-const DatabaseConfig = require('../Config/DatabaseConfig');
-
 class ConstraintService {
-    constructor(sqlBuffer = null, debug = false) {
-        this.srcAdapter = DatabaseConfig.createSrcAdapter(debug);
-        this.dstAdapter = DatabaseConfig.createDstAdapter(debug);
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+        this.srcAdapter = srcAdapter;
+        this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
@@ -47,6 +45,7 @@ class ConstraintService {
                     const displayInfo = `${pk.schema_name}.${pk.table_name}.${pk.constraint_name}`;
 
                     try {
+                        if (!this.dstAdapter) throw new Error('未提供目標連線');
                         await this.dstAdapter.executeQuery(pk.create_statement);
                         console.log(`  建立 Primary Key: ${displayInfo} ✓`);
                         successCount++;
@@ -90,6 +89,7 @@ class ConstraintService {
                     const displayInfo = `${fk.schema_name}.${fk.parent_table}.${fk.constraint_name}`;
 
                     try {
+                        if (!this.dstAdapter) throw new Error('未提供目標連線');
                         await this.dstAdapter.executeQuery(fk.create_statement);
                         console.log(`  建立 Foreign Key: ${displayInfo} ✓`);
                         successCount++;

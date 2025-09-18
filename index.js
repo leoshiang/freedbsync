@@ -1,6 +1,3 @@
-// 載入環境變數
-require('dotenv').config();
-
 const fs = require('fs').promises;
 const minimist = require('minimist');
 const SchemaService = require('./Services/SchemaService');
@@ -9,6 +6,7 @@ const DataService = require('./Services/DataService');
 const ConstraintService = require('./Services/ConstraintService');
 const IndexService = require('./Services/IndexService');
 const CleanupService = require('./Services/CleanupService');
+const DatabaseAdapterFactory = require('./Factories/DatabaseAdapterFactory');
 
 const argv = minimist(process.argv.slice(2));
 const isDryRun = !!argv['dry-run'];
@@ -17,46 +15,66 @@ const isDebug = !!argv['debug'];
 // 全域 debug 設定
 global.DEBUG_MODE = isDebug;
 
-// 驗證環境變數
-function validateEnvironmentVariables() {
-    const requiredVars = [
-        'SRC_SERVER', 'SRC_DB', 'SRC_USER', 'SRC_PWD'
-    ];
-
-    // 只有在非 dry-run 模式才需要目標資料庫設定
-    if (!isDryRun) {
-        requiredVars.push('DST_SERVER', 'DST_DB', 'DST_USER', 'DST_PWD');
-    }
-
-    const missing = requiredVars.filter(varName => !process.env[varName]);
-
-    if (missing.length > 0) {
-        console.error('缺少必要的環境變數:');
-        missing.forEach(varName => {
-            console.error(`   - ${varName}`);
-        });
-        console.error('\n請確認 .env 檔案是否正確設定');
+function buildConfigFromArgs() {
+    const requiredSrc = ['src-server', 'src-db', 'src-user', 'src-pwd'];
+    const missingSrc = requiredSrc.filter(k => !argv[k]);
+    if (missingSrc.length > 0) {
+        console.error('缺少必要的來源參數:');
+        missingSrc.forEach(k => console.error(`  --${k}`));
         process.exit(1);
     }
 
-    console.log('環境變數驗證通過');
-    if (isDebug) {
-        console.log('DEBUG 模式已開啟');
+    if (!isDryRun) {
+        const requiredDst = ['dst-server', 'dst-db', 'dst-user', 'dst-pwd'];
+        const missingDst = requiredDst.filter(k => !argv[k]);
+        if (missingDst.length > 0) {
+            console.error('缺少必要的目標參數:');
+            missingDst.forEach(k => console.error(`  --${k}`));
+            process.exit(1);
+        }
     }
-    if (isDryRun) {
-        console.log(`來源資料庫: ${process.env.SRC_SERVER}/${process.env.SRC_DB}`);
-    } else {
-        console.log(`來源資料庫: ${process.env.SRC_SERVER}/${process.env.SRC_DB}`);
-        console.log(`目標資料庫: ${process.env.DST_SERVER}/${process.env.DST_DB}`);
+
+    const srcConfig = {
+        type: (argv['src-type'] || 'sqlserver').toString(),
+        user: argv['src-user'],
+        password: argv['src-pwd'],
+        server: argv['src-server'],
+        database: argv['src-db'],
+        options: { trustServerCertificate: true },
+    };
+    if (argv['src-port']) srcConfig.port = parseInt(argv['src-port'], 10);
+
+    let dstConfig = null;
+    if (!isDryRun) {
+        dstConfig = {
+            type: (argv['dst-type'] || 'sqlserver').toString(),
+            user: argv['dst-user'],
+            password: argv['dst-pwd'],
+            server: argv['dst-server'],
+            database: argv['dst-db'],
+            options: { trustServerCertificate: true },
+        };
+        if (argv['dst-port']) dstConfig.port = parseInt(argv['dst-port'], 10);
     }
+
+    console.log('參數驗證通過');
+    if (isDebug) console.log('DEBUG 模式已開啟');
+    console.log(`來源資料庫: ${srcConfig.server}/${srcConfig.database}`);
+    if (!isDryRun && dstConfig) {
+        console.log(`目標資料庫: ${dstConfig.server}/${dstConfig.database}`);
+    }
+
+    return { srcConfig, dstConfig };
 }
 
 async function main() {
     console.log('資料庫同步工具');
     console.log('================');
 
-    // 驗證環境變數
-    validateEnvironmentVariables();
+    // 參數 -> adapter
+    const { srcConfig, dstConfig } = buildConfigFromArgs();
+    const srcAdapter = DatabaseAdapterFactory.createAdapter(srcConfig.type, srcConfig, isDebug);
+    const dstAdapter = isDryRun ? null : DatabaseAdapterFactory.createAdapter(dstConfig.type, dstConfig, isDebug);
 
     if (isDryRun) {
         console.log('Dry-run 模式：產生 SQL 腳本');
@@ -67,14 +85,14 @@ async function main() {
 
         try {
             // Schema 相關服務
-            const schemaService = new SchemaService(schemaBuffer, isDebug);
-            const cleanupService = new CleanupService(schemaBuffer, isDebug);
-            const objectService = new ObjectService(schemaBuffer, isDebug);
-            const constraintService = new ConstraintService(schemaBuffer, isDebug);
-            const indexService = new IndexService(schemaBuffer, isDebug);
+            const schemaService = new SchemaService(srcAdapter, dstAdapter, schemaBuffer, isDebug);
+            const cleanupService = new CleanupService(srcAdapter, dstAdapter, schemaBuffer, isDebug);
+            const objectService = new ObjectService(srcAdapter, dstAdapter, schemaBuffer, isDebug);
+            const constraintService = new ConstraintService(srcAdapter, dstAdapter, schemaBuffer, isDebug);
+            const indexService = new IndexService(srcAdapter, dstAdapter, schemaBuffer, isDebug);
 
             // Data 相關服務
-            const dataService = new DataService(dataBuffer, isDebug);
+            const dataService = new DataService(srcAdapter, dstAdapter, dataBuffer, isDebug);
 
             console.log('\n產生 Schema 腳本...');
 
@@ -147,12 +165,12 @@ async function main() {
 
         try {
             // 實際執行服務
-            const schemaService = new SchemaService(null, isDebug);
-            const cleanupService = new CleanupService(null, isDebug);
-            const objectService = new ObjectService(null, isDebug);
-            const dataService = new DataService(null, isDebug);
-            const constraintService = new ConstraintService(null, isDebug);
-            const indexService = new IndexService(null, isDebug);
+            const schemaService = new SchemaService(srcAdapter, dstAdapter, null, isDebug);
+            const cleanupService = new CleanupService(srcAdapter, dstAdapter, null, isDebug);
+            const objectService = new ObjectService(srcAdapter, dstAdapter, null, isDebug);
+            const dataService = new DataService(srcAdapter, dstAdapter, null, isDebug);
+            const constraintService = new ConstraintService(srcAdapter, dstAdapter, null, isDebug);
+            const indexService = new IndexService(srcAdapter, dstAdapter, null, isDebug);
 
             console.log('\n步驟 1: 建立 Schema');
             await schemaService.createSchemas();

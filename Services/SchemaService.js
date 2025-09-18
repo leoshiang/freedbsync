@@ -1,9 +1,7 @@
-const DatabaseConfig = require('../Config/DatabaseConfig');
-
 class SchemaService {
-    constructor(sqlBuffer = null, debug = false) {
-        this.srcAdapter = DatabaseConfig.createSrcAdapter(debug);
-        this.dstAdapter = DatabaseConfig.createDstAdapter(debug);
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+        this.srcAdapter = srcAdapter;
+        this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
