@@ -313,8 +313,20 @@ async function main() {
             await objectService.createObjects(sortedObjects);
 
             console.log('\n步驟 3: 複製資料');
+            console.log(`[調試] compareOnly = ${compareOnly}, isDryRun = ${isDryRun}`);
+
             if (!compareOnly) {
-                await dataService.copyData();
+                console.log('[調試] 開始執行資料複製...');
+                try {
+                    await dataService.copyData();
+                    console.log('[調試] 資料複製執行完成');
+                } catch (dataError) {
+                    console.error('[錯誤] 資料複製過程中發生錯誤:', dataError.message);
+                    if (isDebug) {
+                        console.error('[錯誤詳情]', dataError);
+                    }
+                    throw dataError;
+                }
             } else {
                 console.log('比較模式：略過資料複製');
             }

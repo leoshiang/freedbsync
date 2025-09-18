@@ -572,7 +572,98 @@ class SqlServerAdapter extends DatabaseAdapter {
         });
     }
 
-    // 資料相關操作
+    // 資料相關操作 - 這些是關鍵的缺失方法！
+    async readTables() {
+        return this.withPool(async (pool) => {
+            const sql = `
+                SELECT SCHEMA_NAME(schema_id) AS schema_name,
+                       name                   AS table_name
+                FROM sys.tables
+                ORDER BY SCHEMA_NAME(schema_id), name
+            `;
+
+            this.debugLog('讀取資料表清單', sql);
+            const {recordset} = await pool.request().query(sql);
+            return recordset;
+        });
+    }
+
+    async readTableDataCount(schemaName, tableName) {
+        return this.withPool(async (pool) => {
+            const sql = `SELECT COUNT(*) AS total_count FROM [${schemaName}].[${tableName}]`;
+
+            this.debugLog(`讀取資料表資料筆數: ${schemaName}.${tableName}`, sql);
+
+            const {recordset} = await pool.request().query(sql);
+            return recordset[0].total_count;
+        });
+    }
+
+    async checkIdentityColumn(schemaName, tableName) {
+        return this.withPool(async (pool) => {
+            const sql = `
+                SELECT COUNT(*) AS identity_count
+                FROM sys.identity_columns ic
+                INNER JOIN sys.objects o ON ic.object_id = o.object_id
+                INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+                WHERE s.name = @schemaName
+                  AND o.name = @tableName
+            `;
+
+            this.debugLog(`檢查 IDENTITY 欄位: ${schemaName}.${tableName}`, sql);
+
+            const {recordset} = await pool.request()
+                .input('schemaName', mssql.NVarChar, schemaName)
+                .input('tableName', mssql.NVarChar, tableName)
+                .query(sql);
+
+            return recordset[0].identity_count > 0;
+        });
+    }
+
+    generateBatchInserts(tableName, rows, hasIdentityColumn, batchSize = 1000) {
+        if (!rows || rows.length === 0) {
+            return [];
+        }
+
+        const batches = [];
+
+        // 獲取欄位名稱
+        const columns = Object.keys(rows[0]);
+        const columnList = columns.map(col => `[${col}]`).join(', ');
+
+        for (let i = 0; i < rows.length; i += batchSize) {
+            const batch = rows.slice(i, i + batchSize);
+
+            const valuesList = batch.map(row => {
+                const values = columns.map(col => {
+                    const value = row[col];
+                    return this.escapeValue(value);
+                }).join(', ');
+
+                return `(${values})`;
+            }).join(',\n    ');
+
+            let sql = '';
+
+            if (hasIdentityColumn) {
+                sql += `SET IDENTITY_INSERT ${tableName} ON;\n`;
+            }
+
+            sql += `INSERT INTO ${tableName} (${columnList})
+VALUES
+    ${valuesList};`;
+
+            if (hasIdentityColumn) {
+                sql += `\nSET IDENTITY_INSERT ${tableName} OFF;`;
+            }
+
+            batches.push(sql);
+        }
+
+        return batches;
+    }
+
     async readTableData(schemaName, tableName) {
         return this.withPool(async (pool) => {
             const sql = `SELECT * FROM [${schemaName}].[${tableName}]`;
@@ -606,60 +697,6 @@ class SqlServerAdapter extends DatabaseAdapter {
 
             return recordset;
         });
-    }
-
-    async getTables() {
-        return this.withPool(async (pool) => {
-            const sql = `
-                SELECT SCHEMA_NAME(schema_id) AS schema_name,
-                       name                   AS table_name
-                FROM sys.tables
-                ORDER BY SCHEMA_NAME(schema_id), name
-            `;
-
-            this.debugLog('讀取資料表清單', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    generateDataInsertBatches(schemaName, tableName, data, columns, batchSize = 1000) {
-        const batches = [];
-        const safeTableName = `[${schemaName}].[${tableName}]`;
-
-        const columnList = columns.map(c => `[${c.column_name}]`).join(', ');
-        const hasIdentityColumn = columns.some(c => c.is_identity);
-
-        for (let i = 0; i < data.length; i += batchSize) {
-            const batch = data.slice(i, i + batchSize);
-
-            const valuesList = batch.map(row => {
-                const values = columns.map(col => {
-                    const value = row[col.column_name];
-                    return this.escapeValue(value);
-                }).join(', ');
-
-                return `(${values})`;
-            }).join(',\n    ');
-
-            let sql = '';
-
-            if (hasIdentityColumn) {
-                sql += `SET IDENTITY_INSERT ${safeTableName} ON;\n`;
-            }
-
-            sql += `INSERT INTO ${safeTableName} (${columnList})
-                    VALUES
-                        ${valuesList};`;
-
-            if (hasIdentityColumn) {
-                sql += `\nSET IDENTITY_INSERT ${safeTableName} OFF;`;
-            }
-
-            batches.push(sql);
-        }
-
-        return batches;
     }
 
     // DROP 語句產生
