@@ -1,10 +1,11 @@
 class CleanupService {
-    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false, compareOnly = false) {
         this.srcAdapter = srcAdapter;
         this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
+        this.compareOnly = compareOnly;
     }
 
     pushSql(sql) {
@@ -23,10 +24,17 @@ class CleanupService {
     async cleanupExistingObjects() {
         try {
             if (this.isDryRun) {
+                // 比較模式不產生清理腳本
+                if (this.compareOnly) {
+                    this.pushSql(`-- 比較模式：不產生清理腳本\n\n`);
+                    return;
+                }
+
                 // Dry-run 模式：產生清理腳本
                 this.pushSql(`-- 清理現有物件\n`);
                 this.pushSql(`-- =============================================\n\n`);
 
+                // 產生通用的清理腳本
                 this.pushSql(`-- 1. 刪除所有 Foreign Key 約束\n`);
                 this.pushSql(`DECLARE @sql NVARCHAR(MAX) = ''  `);
                 this.pushSql(`SELECT @sql = @sql + 'ALTER TABLE [' + SCHEMA_NAME(fk.schema_id) + '].[' + tp.name + '] DROP CONSTRAINT [' + fk.name + '];' + CHAR(13)\n`);
@@ -77,6 +85,12 @@ class CleanupService {
             }
 
             // 實際執行模式：清理現有物件
+            // 比較模式不執行清理
+            if (this.compareOnly) {
+                console.log('比較模式：略過清理步驟');
+                return;
+            }
+
             console.log('步驟 2a: 清理現有物件');
 
             let totalCount = 0;

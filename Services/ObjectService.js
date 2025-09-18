@@ -1,12 +1,19 @@
 const { Graph, alg } = require('graphlib');
 
+function normalizeSql(text) {
+    if (!text) return '';
+    // 基本化簡：移除連續空白、換行差異；不處理語意等價
+    return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 class ObjectService {
-    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false, compareOnly = false) {
         this.srcAdapter = srcAdapter;
         this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
+        this.compareOnly = compareOnly;
     }
 
     pushSql(sql) {
@@ -77,131 +84,201 @@ class ObjectService {
     }
 
     async createObjects(sortedObjs) {
+        // 目標端物件快取（比較模式需要）
+        let dstObjectMap = null;
+        if (this.compareOnly) {
+            if (!this.dstAdapter) throw new Error('比較模式需要目標連線');
+            const dstObjects = await this.dstAdapter.readObjects();
+            dstObjectMap = new Map();
+            dstObjects.forEach(o => {
+                const key = `${o.type}|${o.schema_name}|${o.name}`.toLowerCase();
+                dstObjectMap.set(key, o);
+            });
+        }
+
         const tables = sortedObjs.filter(o => o.type === 'U');
         const otherObjects = sortedObjs.filter(o => o.type !== 'U');
 
         console.log(`處理 ${tables.length} 個資料表，${otherObjects.length} 個其他物件`);
 
         if (this.isDryRun) {
-            this.pushSql(`-- 建立資料庫物件 (不包含 Foreign Key 和 Index)\n`);
-            this.pushSql(`-- =============================================\n\n`);
+            if (!this.compareOnly) {
+                this.pushSql(`-- 建立資料庫物件 (不包含 Foreign Key 和 Index)\n`);
+                this.pushSql(`-- =============================================\n\n`);
 
-            this.pushSql(`-- DROP 現有物件 (依相依性反向順序)\n`);
-            this.pushSql(`-- =============================================\n\n`);
+                this.pushSql(`-- DROP 現有物件 (依相依性反向順序)\n`);
+                this.pushSql(`-- =============================================\n\n`);
 
-            const reversedObjects = [...sortedObjs].reverse();
+                const reversedObjects = [...sortedObjs].reverse();
 
-            for (const obj of reversedObjects) {
-                const typeNames = {
-                    'U': 'Table',
-                    'V': 'View',
-                    'P': 'Procedure',
-                    'FN': 'Function',
-                    'TF': 'Function',
-                    'IF': 'Function'
-                };
-                const typeName = typeNames[obj.type] || obj.type;
+                for (const obj of reversedObjects) {
+                    const typeNames = {
+                        'U': 'Table',
+                        'V': 'View',
+                        'P': 'Procedure',
+                        'FN': 'Function',
+                        'TF': 'Function',
+                        'IF': 'Function'
+                    };
+                    const typeName = typeNames[obj.type] || obj.type;
 
-                this.pushSql(`-- DROP ${obj.schema_name}.${obj.name} (${typeName})\n`);
+                    this.pushSql(`-- DROP ${obj.schema_name}.${obj.name} (${typeName})\n`);
 
-                const dropStatement = this.generateDropStatement(obj.schema_name, obj.name, obj.type);
-                if (dropStatement) {
-                    this.pushSql(`${dropStatement};\n`);
-                    this.pushSql(`GO\n\n`);
+                    const dropStatement = this.generateDropStatement(obj.schema_name, obj.name, obj.type);
+                    if (dropStatement) {
+                        this.pushSql(`${dropStatement};\n`);
+                        this.pushSql(`GO\n\n`);
+                    }
                 }
+
+                this.pushSql(`-- CREATE 物件 (依相依性正向順序)\n`);
+                this.pushSql(`-- =============================================\n\n`);
+            } else {
+                this.pushSql(`-- 比較模式：僅產生目標不存在或定義不同的物件 CREATE 語句\n`);
+                this.pushSql(`-- =============================================\n\n`);
             }
 
-            this.pushSql(`-- CREATE 物件 (依相依性正向順序)\n`);
-            this.pushSql(`-- =============================================\n\n`);
-
+            // 資料表
             if (tables.length > 0) {
                 console.log('產生資料表 CREATE 語句...');
                 for (const table of tables) {
                     try {
-                        const tableCreateStatement = await this.generateTableCreateStatement(table.schema_name, table.name);
-                        if (tableCreateStatement) {
-                            this.pushSql(`-- 建立資料表 ${table.schema_name}.${table.name}\n`);
-                            this.pushSql(`${tableCreateStatement};\n`);
-                            this.pushSql(`GO\n\n`);
-                        } else {
+                        const srcCreate = await this.generateTableCreateStatement(table.schema_name, table.name);
+                        if (!srcCreate) {
                             console.warn(`無法產生資料表 ${table.schema_name}.${table.name} 的 CREATE 語句`);
+                            continue;
                         }
+
+                        if (this.compareOnly) {
+                            const key = `U|${table.schema_name}|${table.name}`.toLowerCase();
+                            let shouldEmit = false;
+                            if (!dstObjectMap.has(key)) {
+                                shouldEmit = true; // 目標端不存在
+                            } else {
+                                // 目標端也生成 CREATE 再比對
+                                const dstCreate = await this.dstAdapter.generateTableCreateStatement(table.schema_name, table.name);
+                                if (!dstCreate) {
+                                    shouldEmit = true;
+                                } else if (normalizeSql(srcCreate) !== normalizeSql(dstCreate)) {
+                                    shouldEmit = true;
+                                }
+                            }
+                            if (!shouldEmit) continue;
+                        }
+
+                        this.pushSql(`-- 建立資料表 ${table.schema_name}.${table.name}\n`);
+                        this.pushSql(`${srcCreate};\n`);
+                        this.pushSql(`GO\n\n`);
                     } catch (err) {
                         console.error(`產生資料表 ${table.schema_name}.${table.name} CREATE 語句失敗:`, err.message);
                     }
                 }
             }
 
+            // 其他物件
             if (otherObjects.length > 0) {
                 console.log('產生其他物件 CREATE 語句...');
                 for (const obj of otherObjects) {
-                    if (obj.definition) {
-                        const typeNames = {
-                            'V': 'View', 'P': 'Procedure', 'FN': 'Function', 'TF': 'Function', 'IF': 'Function'
-                        };
-                        const typeName = typeNames[obj.type] || obj.type;
-
-                        this.pushSql(`-- 建立 ${obj.schema_name}.${obj.name} (${typeName})\n`);
-                        this.pushSql(`${obj.definition};\n`);
-                        this.pushSql(`GO\n\n`);
-                    } else {
+                    if (!obj.definition) {
                         console.warn(`物件 ${obj.schema_name}.${obj.name} 沒有定義`);
+                        continue;
                     }
+
+                    if (this.compareOnly) {
+                        const key = `${obj.type}|${obj.schema_name}|${obj.name}`.toLowerCase();
+                        const dstObj = dstObjectMap.get(key);
+                        let shouldEmit = false;
+                        if (!dstObj) {
+                            shouldEmit = true;
+                        } else {
+                            const srcDef = normalizeSql(obj.definition);
+                            const dstDef = normalizeSql(dstObj.definition);
+                            if (srcDef !== dstDef) shouldEmit = true;
+                        }
+                        if (!shouldEmit) continue;
+                    }
+
+                    const typeNames = {
+                        'V': 'View', 'P': 'Procedure', 'FN': 'Function', 'TF': 'Function', 'IF': 'Function'
+                    };
+                    const typeName = typeNames[obj.type] || obj.type;
+
+                    this.pushSql(`-- 建立 ${obj.schema_name}.${obj.name} (${typeName})\n`);
+                    this.pushSql(`${obj.definition};\n`);
+                    this.pushSql(`GO\n\n`);
                 }
             }
             return;
         }
 
-        console.log('步驟 2b: CREATE 物件（依相依性正向順序）');
+        // 實際執行模式
+        console.log(this.compareOnly
+            ? '步驟 2b: 比較模式 - 只建立不存在或不同的物件'
+            : '步驟 2b: CREATE 物件（依相依性正向順序）');
 
-        let totalCount = sortedObjs.length;
+        let totalCount = 0;
         let successCount = 0;
         let failureCount = 0;
 
         for (const o of sortedObjs) {
-            if (o.type === 'U') {
-                console.log(`  建立資料表: ${o.schema_name}.${o.name}`);
-
-                try {
-                    const tableCreateStatement = await this.generateTableCreateStatement(o.schema_name, o.name);
-                    if (tableCreateStatement) {
-                        this.debugLog(`執行 CREATE TABLE: ${o.schema_name}.${o.name}`, tableCreateStatement);
-                        if (!this.dstAdapter) throw new Error('未提供目標連線');
-                        await this.dstAdapter.executeBatch(tableCreateStatement);
-                        successCount++;
-                    } else {
-                        console.log(`    ✗ 無法產生 CREATE 語句`);
+            try {
+                if (o.type === 'U') {
+                    const srcCreate = await this.generateTableCreateStatement(o.schema_name, o.name);
+                    if (!srcCreate) {
+                        console.log(`  建立資料表: ${o.schema_name}.${o.name} ✗ 無法產生 CREATE 語句`);
                         failureCount++;
+                        continue;
                     }
-                } catch (err) {
-                    console.log(`    ✗ 失敗: ${err.message}`);
-                    failureCount++;
-                }
-            } else {
-                const typeNames = {
-                    'V': '檢視表', 'P': '預存程序', 'FN': '函數', 'TF': '函數', 'IF': '函數'
-                };
-                const typeName = typeNames[o.type] || o.type;
-                console.log(`  建立${typeName}: ${o.schema_name}.${o.name}`);
 
-                if (o.definition) {
-                    try {
-                        this.debugLog(`執行 CREATE: ${o.schema_name}.${o.name}`, o.definition.substring(0, 200) + '...');
-                        if (!this.dstAdapter) throw new Error('未提供目標連線');
-                        await this.dstAdapter.executeBatch(o.definition);
-                        successCount++;
-                    } catch (err) {
-                        console.log(`    ✗ 失敗: ${err.message}`);
-                        failureCount++;
+                    if (this.compareOnly) {
+                        if (!this.dstAdapter) throw new Error('比較模式需要目標連線');
+                        const dstCreate = await this.dstAdapter.generateTableCreateStatement(o.schema_name, o.name);
+                        const isMissing = !dstCreate;
+                        const isDifferent = dstCreate && normalizeSql(dstCreate) !== normalizeSql(srcCreate);
+                        if (!isMissing && !isDifferent) continue;
                     }
+
+                    this.debugLog(`執行 CREATE TABLE: ${o.schema_name}.${o.name}`, srcCreate);
+                    if (!this.dstAdapter) throw new Error('未提供目標連線');
+                    await this.dstAdapter.executeBatch(srcCreate);
+                    console.log(`  建立資料表: ${o.schema_name}.${o.name} ✓`);
+                    successCount++;
+                    totalCount++;
                 } else {
-                    console.log(`    ✗ 沒有定義`);
-                    failureCount++;
+                    if (!o.definition) {
+                        console.log(`  建立物件: ${o.schema_name}.${o.name} ✗ 沒有定義`);
+                        failureCount++;
+                        totalCount++;
+                        continue;
+                    }
+
+                    if (this.compareOnly) {
+                        if (!dstObjectMap) {
+                            const dstObjects = await this.dstAdapter.readObjects();
+                            dstObjectMap = new Map(dstObjects.map(d => [`${d.type}|${d.schema_name}|${d.name}`.toLowerCase(), d]));
+                        }
+                        const key = `${o.type}|${o.schema_name}|${o.name}`.toLowerCase();
+                        const dstObj = dstObjectMap.get(key);
+                        const isMissing = !dstObj;
+                        const isDifferent = dstObj && normalizeSql(dstObj.definition) !== normalizeSql(o.definition);
+                        if (!isMissing && !isDifferent) continue;
+                    }
+
+                    this.debugLog(`執行 CREATE: ${o.schema_name}.${o.name}`, o.definition.substring(0, 200) + '...');
+                    if (!this.dstAdapter) throw new Error('未提供目標連線');
+                    await this.dstAdapter.executeBatch(o.definition);
+                    console.log(`  建立物件: ${o.schema_name}.${o.name} ✓`);
+                    successCount++;
+                    totalCount++;
                 }
+            } catch (err) {
+                console.log(`  建立 ${o.schema_name}.${o.name} ✗ 失敗: ${err.message}`);
+                failureCount++;
+                totalCount++;
             }
         }
 
-        console.log(`\n物件建立完成 - 總計: ${totalCount}, 成功: ${successCount}, 失敗: ${failureCount}`);
+        console.log(`\n物件建立完成 - 觸及: ${totalCount}, 成功: ${successCount}, 失敗: ${failureCount}`);
     }
 }
 

@@ -1,10 +1,11 @@
 class DataService {
-    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false, compareOnly = false) {
         this.srcAdapter = srcAdapter;
         this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
+        this.compareOnly = compareOnly;
     }
 
     pushSql(sql) {
@@ -53,6 +54,11 @@ class DataService {
     }
 
     async copyData() {
+        if (this.compareOnly) {
+            console.log('比較模式：略過資料複製');
+            return;
+        }
+
         try {
             const tables = await this.readTables();
 

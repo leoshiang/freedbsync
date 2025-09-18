@@ -1,10 +1,16 @@
+function normalizeSql(text) {
+    if (!text) return '';
+    return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 class IndexService {
-    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false, compareOnly = false) {
         this.srcAdapter = srcAdapter;
         this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
+        this.compareOnly = compareOnly;
     }
 
     pushSql(sql) {
@@ -36,14 +42,35 @@ class IndexService {
 
             console.log(`發現 ${indexes.length} 個索引（不含主鍵與主鍵衍生唯一約束）`);
 
+            // 比較模式：建立目標端索引 map 以便判斷差異
+            let dstIndexMap = null;
+            if (this.compareOnly) {
+                if (!this.dstAdapter) throw new Error('比較模式需要目標連線');
+                const dstIdx = await this.dstAdapter.readIndexes();
+                dstIndexMap = new Map(
+                    dstIdx
+                        .filter(d => d.create_statement)
+                        .map(d => [`${d.schema_name}|${d.table_name}|${d.index_name}`.toLowerCase(), d])
+                );
+            }
+
             if (this.isDryRun) {
                 this.pushSql(`-- 建立索引\n`);
                 this.pushSql(`-- =============================================\n\n`);
-                indexes.forEach(idx => {
-                    if (!idx.create_statement) return;
+                for (const idx of indexes) {
+                    if (!idx.create_statement) continue;
+
+                    if (this.compareOnly) {
+                        const key = `${idx.schema_name}|${idx.table_name}|${idx.index_name}`.toLowerCase();
+                        const dst = dstIndexMap.get(key);
+                        const isMissing = !dst;
+                        const isDifferent = dst && normalizeSql(dst.create_statement) !== normalizeSql(idx.create_statement);
+                        if (!isMissing && !isDifferent) continue;
+                    }
+
                     this.pushSql(`-- 索引: ${idx.schema_name}.${idx.table_name}.${idx.index_name}\n`);
                     this.pushSql(`${idx.create_statement};\nGO\n\n`);
-                });
+                }
             } else {
                 let successCount = 0;
                 let failureCount = 0;
@@ -51,6 +78,14 @@ class IndexService {
                 for (const idx of indexes) {
                     if (!idx.create_statement) continue;
                     const displayInfo = `${idx.schema_name}.${idx.table_name}.${idx.index_name}`;
+
+                    if (this.compareOnly) {
+                        const key = `${idx.schema_name}|${idx.table_name}|${idx.index_name}`.toLowerCase();
+                        const dst = dstIndexMap.get(key);
+                        const isMissing = !dst;
+                        const isDifferent = dst && normalizeSql(dst.create_statement) !== normalizeSql(idx.create_statement);
+                        if (!isMissing && !isDifferent) continue;
+                    }
 
                     try {
                         if (!this.dstAdapter) throw new Error('未提供目標連線');

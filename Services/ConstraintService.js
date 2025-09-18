@@ -1,10 +1,16 @@
+function normalizeSql(text) {
+    if (!text) return '';
+    return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 class ConstraintService {
-    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false) {
+    constructor(srcAdapter, dstAdapter, sqlBuffer = null, debug = false, compareOnly = false) {
         this.srcAdapter = srcAdapter;
         this.dstAdapter = dstAdapter;
         this.sqlBuffer = sqlBuffer;
         this.isDryRun = sqlBuffer !== null;
         this.debug = debug;
+        this.compareOnly = compareOnly;
     }
 
     pushSql(sql) {
@@ -30,19 +36,44 @@ class ConstraintService {
 
             console.log(`發現 ${primaryKeys.length} 個 Primary Key`);
 
+            // 比較模式：讀取目標端 PK
+            let dstPkMap = null;
+            if (this.compareOnly) {
+                if (!this.dstAdapter) throw new Error('比較模式需要目標連線');
+                const dstPks = await this.dstAdapter.readPrimaryKeys();
+                dstPkMap = new Map(
+                    dstPks.map(p => [`${p.schema_name}|${p.table_name}|${p.constraint_name}`.toLowerCase(), p])
+                );
+            }
+
             if (this.isDryRun) {
                 this.pushSql(`-- 建立 Primary Key 約束\n`);
                 this.pushSql(`-- =============================================\n\n`);
-                primaryKeys.forEach(pk => {
+                for (const pk of primaryKeys) {
+                    if (this.compareOnly) {
+                        const key = `${pk.schema_name}|${pk.table_name}|${pk.constraint_name}`.toLowerCase();
+                        const dst = dstPkMap.get(key);
+                        const isMissing = !dst;
+                        const isDifferent = dst && normalizeSql(dst.create_statement) !== normalizeSql(pk.create_statement);
+                        if (!isMissing && !isDifferent) continue;
+                    }
                     this.pushSql(`-- Primary Key: ${pk.schema_name}.${pk.table_name}.${pk.constraint_name}\n`);
                     this.pushSql(`${pk.create_statement};\nGO\n\n`);
-                });
+                }
             } else {
                 let successCount = 0;
                 let failureCount = 0;
 
                 for (const pk of primaryKeys) {
                     const displayInfo = `${pk.schema_name}.${pk.table_name}.${pk.constraint_name}`;
+
+                    if (this.compareOnly) {
+                        const key = `${pk.schema_name}|${pk.table_name}|${pk.constraint_name}`.toLowerCase();
+                        const dst = dstPkMap.get(key);
+                        const isMissing = !dst;
+                        const isDifferent = dst && normalizeSql(dst.create_statement) !== normalizeSql(pk.create_statement);
+                        if (!isMissing && !isDifferent) continue;
+                    }
 
                     try {
                         if (!this.dstAdapter) throw new Error('未提供目標連線');
@@ -74,19 +105,44 @@ class ConstraintService {
 
             console.log(`發現 ${foreignKeys.length} 個 Foreign Key`);
 
+            // 比較模式：讀取目標端 FK
+            let dstFkMap = null;
+            if (this.compareOnly) {
+                if (!this.dstAdapter) throw new Error('比較模式需要目標連線');
+                const dstFks = await this.dstAdapter.readForeignKeys();
+                dstFkMap = new Map(
+                    dstFks.map(f => [`${f.schema_name}|${f.parent_table}|${f.constraint_name}`.toLowerCase(), f])
+                );
+            }
+
             if (this.isDryRun) {
                 this.pushSql(`-- 建立 Foreign Key 約束\n`);
                 this.pushSql(`-- =============================================\n\n`);
-                foreignKeys.forEach(fk => {
+                for (const fk of foreignKeys) {
+                    if (this.compareOnly) {
+                        const key = `${fk.schema_name}|${fk.parent_table}|${fk.constraint_name}`.toLowerCase();
+                        const dst = dstFkMap.get(key);
+                        const isMissing = !dst;
+                        const isDifferent = dst && normalizeSql(dst.create_statement) !== normalizeSql(fk.create_statement);
+                        if (!isMissing && !isDifferent) continue;
+                    }
                     this.pushSql(`-- Foreign Key: ${fk.schema_name}.${fk.parent_table}.${fk.constraint_name}\n`);
                     this.pushSql(`${fk.create_statement};\nGO\n\n`);
-                });
+                }
             } else {
                 let successCount = 0;
                 let failureCount = 0;
 
                 for (const fk of foreignKeys) {
                     const displayInfo = `${fk.schema_name}.${fk.parent_table}.${fk.constraint_name}`;
+
+                    if (this.compareOnly) {
+                        const key = `${fk.schema_name}|${fk.parent_table}|${fk.constraint_name}`.toLowerCase();
+                        const dst = dstFkMap.get(key);
+                        const isMissing = !dst;
+                        const isDifferent = dst && normalizeSql(dst.create_statement) !== normalizeSql(fk.create_statement);
+                        if (!isMissing && !isDifferent) continue;
+                    }
 
                     try {
                         if (!this.dstAdapter) throw new Error('未提供目標連線');
