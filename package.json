@@ -31,11 +31,13 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "express": "^4.21.2",
     "graphlib": "2.1.8",
     "minimist": "1.2.8",
-    "mssql": "11.0.1"
+    "mssql": "11.0.1",
+    "socket.io": "^4.8.1",
+    "ws": "^8.18.3"
   },
-  "devDependencies": {},
   "files": [
     "index.js",
     "bin/",
@@ -43,6 +45,7 @@
     "Adapters/",
     "Factories/",
     "Utils/",
+    "web/",
     "README.md"
   ],
   "repository": {

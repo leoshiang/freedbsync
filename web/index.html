@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FreeDbSync - 資料庫同步工具</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .config-section {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .log-container {
+            height: 400px;
+            overflow-y: auto;
+            background: #000;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .sql-preview {
+            height: 500px;
+            overflow-y: auto;
+            background: #2d3748;
+            color: #e2e8f0;
+            font-family: 'Courier New', monospace;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .status-success { color: #28a745; }
+        .status-error { color: #dc3545; }
+        .status-info { color: #17a2b8; }
+        .status-warning { color: #ffc107; }
+
+        .nav-tabs .nav-link {
+            color: #495057;
+        }
+        .nav-tabs .nav-link.active {
+            background-color: #007bff;
+            border-color: #007bff;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+                <div class="container">
+                        <span class="navbar-brand mb-0 h1">
+                            <i class="fas fa-database"></i> FreeDbSync 資料庫同步工具
+                        </span>
+                    <div class="navbar-nav ms-auto">
+                            <span class="navbar-text" id="connection-status">
+                                <i class="fas fa-circle text-secondary"></i> 未連線
+                            </span>
+                    </div>
+                </div>
+            </nav>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- 配置區域 -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="config-section">
+                    <h5><i class="fas fa-server"></i> 來源資料庫</h5>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label class="form-label">伺服器位址</label>
+                            <input type="text" class="form-control" id="src-server" placeholder="localhost">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">連接埠</label>
+                            <input type="number" class="form-control" id="src-port" placeholder="1433">
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-md-6">
+                            <label class="form-label">資料庫名稱</label>
+                            <input type="text" class="form-control" id="src-db" placeholder="database_name">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">使用者名稱</label>
+                            <input type="text" class="form-control" id="src-user" placeholder="sa">
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-md-6">
+                            <label class="form-label">密碼</label>
+                            <input type="password" class="form-control" id="src-pwd">
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <button class="btn btn-outline-primary" onclick="testConnection('src')">
+                                <i class="fas fa-plug"></i> 測試連線
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="config-section">
+                    <h5><i class="fas fa-server"></i> 目標資料庫</h5>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label class="form-label">伺服器位址</label>
+                            <input type="text" class="form-control" id="dst-server" placeholder="localhost">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">連接埠</label>
+                            <input type="number" class="form-control" id="dst-port" placeholder="1433">
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-md-6">
+                            <label class="form-label">資料庫名稱</label>
+                            <input type="text" class="form-control" id="dst-db" placeholder="database_name">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">使用者名稱</label>
+                            <input type="text" class="form-control" id="dst-user" placeholder="sa">
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-md-6">
+                            <label class="form-label">密碼</label>
+                            <input type="password" class="form-control" id="dst-pwd">
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <button class="btn btn-outline-primary" onclick="testConnection('dst')">
+                                <i class="fas fa-plug"></i> 測試連線
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 選項區域 -->
+        <div class="row">
+            <div class="col-12">
+                <div class="config-section">
+                    <h5><i class="fas fa-cog"></i> 執行選項</h5>
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="compare-only">
+                                <label class="form-check-label" for="compare-only">比較模式</label>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="debug-mode">
+                                <label class="form-check-label" for="debug-mode">除錯模式</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 操作按鈕 -->
+        <div class="row">
+            <div class="col-12 text-center">
+                <div class="btn-group me-3" role="group">
+                    <button class="btn btn-success btn-lg" onclick="startSync()">
+                        <i class="fas fa-sync-alt"></i> 開始同步
+                    </button>
+                    <button class="btn btn-info btn-lg" onclick="generatePreview()">
+                        <i class="fas fa-eye"></i> 產生預覽
+                    </button>
+                </div>
+                <div class="btn-group" role="group">
+                    <button class="btn btn-secondary" onclick="saveConfig()">
+                        <i class="fas fa-save"></i> 儲存設定
+                    </button>
+                    <button class="btn btn-outline-secondary" onclick="loadConfig()">
+                        <i class="fas fa-upload"></i> 載入設定
+                    </button>
+                    <button class="btn btn-outline-danger" onclick="clearConfig()">
+                        <i class="fas fa-trash"></i> 清除設定
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 進度條 -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="progress" style="height: 25px;">
+                    <div class="progress-bar" id="progress-bar" role="progressbar" style="width: 0%">0%</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 標籤區域 -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <ul class="nav nav-tabs" id="resultTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-panel" type="button" role="tab">
+                            <i class="fas fa-terminal"></i> 執行紀錄
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="schema-tab" data-bs-toggle="tab" data-bs-target="#schema-panel" type="button" role="tab">
+                            <i class="fas fa-database"></i> Schema SQL
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="data-tab" data-bs-toggle="tab" data-bs-target="#data-panel" type="button" role="tab">
+                            <i class="fas fa-table"></i> Data SQL
+                        </button>
+                    </li>
+                </ul>
+                <div class="tab-content" id="resultTabsContent">
+                    <div class="tab-pane fade show active" id="log-panel" role="tabpanel">
+                        <div class="log-container" id="log-container">
+                            <div class="status-info">歡迎使用 FreeDbSync 網頁介面!</div>
+                            <div class="status-info">請設定來源和目標資料庫連線資訊</div>
+                            <div class="status-info">您的設定會自動儲存在瀏覽器的 localStorage 中</div>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="schema-panel" role="tabpanel">
+                        <div class="sql-preview" id="schema-preview">
+                            <div class="text-muted">Schema SQL 將顯示在這裡...</div>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="data-panel" role="tabpanel">
+                        <div class="sql-preview" id="data-preview">
+                            <div class="text-muted">Data SQL 將顯示在這裡...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
+<!-- 更新 Socket.IO 客戶端版本以符合伺服器端版本 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

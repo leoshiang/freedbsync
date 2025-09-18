@@ -16,6 +16,7 @@ const isDebug = !!argv['debug'];
 const compareOnly = !!argv['compare-only'];
 const showHelp = !!argv['help'] || !!argv['h'];
 const showVersion = !!argv['version'] || !!argv['v'];
+const isGuiMode = !!argv['gui'];
 
 // 全域 debug 設定
 global.DEBUG_MODE = isDebug;
@@ -59,6 +60,7 @@ function showHelpMessage() {
 執行模式:
   --dry-run         預覽模式，產生 SQL 腳本而不執行
   --compare-only    比較模式，僅處理差異項目
+  --gui             啟動網頁介面模式
 
 其他選項:
   --debug           開啟除錯模式，顯示詳細執行資訊
@@ -71,6 +73,9 @@ function showHelpMessage() {
 
   # 顯示版本
   freedbsync --version
+
+  # 啟動網頁介面（推薦）
+  freedbsync --gui
 
   # 預覽模式 - 產生 SQL 腳本
   freedbsync --dry-run \\
@@ -99,10 +104,51 @@ function showHelpMessage() {
   • 比較模式需要提供目標資料庫連線參數
   • 預覽模式會在當前目錄產生 SQL 檔案
   • 支援 SQL Server 資料庫同步
+  • GUI 模式提供友善的網頁介面
   • 建議先使用預覽模式檢查產生的 SQL
 
 更多資訊請參考: ${packageJson.homepage || 'README.md'}
 `);
+}
+
+async function startGuiMode() {
+    try {
+        const WebServer = require('./web/server');
+        const server = new WebServer(3000);
+
+        console.log('啟動 FreeDbSync 網頁介面...');
+        await server.start();
+
+        // 自動開啟瀏覽器 (可選)
+        const open = async (url) => {
+            const { exec } = require('child_process');
+            const start = process.platform === 'darwin' ? 'open' :
+                process.platform === 'win32' ? 'start' : 'xdg-open';
+            exec(`${start} ${url}`);
+        };
+
+        setTimeout(() => {
+            open('http://localhost:3000');
+        }, 1000);
+
+        // 處理關閉信號
+        const gracefulShutdown = async (signal) => {
+            console.log(`\n收到 ${signal} 信號，正在關閉伺服器...`);
+            await server.stop();
+            console.log('伺服器已關閉，再見！');
+            process.exit(0);
+        };
+
+        process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+        process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+    } catch (error) {
+        console.error('GUI 模式啟動失敗:', error.message);
+        if (isDebug) {
+            console.error('詳細錯誤:', error);
+        }
+        process.exit(1);
+    }
 }
 
 function buildConfigFromArgs() {
@@ -118,13 +164,18 @@ function buildConfigFromArgs() {
         process.exit(0);
     }
 
+    // GUI 模式
+    if (isGuiMode) {
+        return null; // GUI 模式不需要驗證 CLI 參數
+    }
+
     // 驗證必要參數
     const requiredSrc = ['src-server', 'src-db', 'src-user', 'src-pwd'];
     const missingSrc = requiredSrc.filter(k => !argv[k]);
     if (missingSrc.length > 0) {
         console.error('ERROR: 缺少必要的來源參數:');
         missingSrc.forEach(k => console.error(`   --${k}`));
-        console.error('\n使用 --help 查看完整說明');
+        console.error('\n使用 --help 查看完整說明，或使用 --gui 啟動網頁介面');
         process.exit(1);
     }
 
@@ -136,7 +187,7 @@ function buildConfigFromArgs() {
         if (missingDst.length > 0) {
             console.error('ERROR: 缺少必要的目標參數:');
             missingDst.forEach(k => console.error(`   --${k}`));
-            console.error('\n使用 --help 查看完整說明');
+            console.error('\n使用 --help 查看完整說明，或使用 --gui 啟動網頁介面');
             process.exit(1);
         }
     }
@@ -185,13 +236,24 @@ function buildConfigFromArgs() {
 
 async function main() {
     const packageJson = require('./package.json');
+
+    // GUI 模式
+    if (isGuiMode) {
+        await startGuiMode();
+        return;
+    }
+
     console.log(`資料庫同步工具 v${packageJson.version}`);
     console.log('================================');
 
-    const {srcConfig, dstConfig} = buildConfigFromArgs();
+    const config = buildConfigFromArgs();
+    if (!config) return; // GUI 模式已處理
+
+    const {srcConfig, dstConfig} = config;
     const srcAdapter = DatabaseAdapterFactory.createAdapter(srcConfig.type, srcConfig, isDebug);
     const dstAdapter = dstConfig ? DatabaseAdapterFactory.createAdapter(dstConfig.type, dstConfig, isDebug) : null;
 
+    // ... existing code ...
     if (isDryRun) {
         console.log('Dry-run 模式：產生 SQL 腳本');
 
