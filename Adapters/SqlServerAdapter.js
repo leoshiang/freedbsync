@@ -5,24 +5,50 @@ const mssql = require('mssql');
  * SQL Server 資料庫適配器
  */
 class SqlServerAdapter extends DatabaseAdapter {
-    constructor(config, debug = false) {
-        super(config, debug);
-    }
+	constructor(config, debug = false) {
+		super(config, debug);
+		// 可重用的連線池（供 connect/disconnect 與 withPool 使用）
+		this._pool = null;
+	}
 
-    async withPool(fn) {
-        const pool = new mssql.ConnectionPool(this.config);
-        await pool.connect();
-        try {
-            return await fn(pool);
-        } finally {
-            await pool.close();
-        }
-    }
+	// 標準連線/斷線方法（供測試連線 API 使用）
+	async connect() {
+		if (this._pool && this._pool.connected) {
+			return; // 已連線
+		}
+		const pool = new mssql.ConnectionPool(this.config);
+		await pool.connect();
+		this._pool = pool;
+	}
 
-    // Schema 相關操作
-    async readSchemas() {
-        return this.withPool(async (pool) => {
-            const {recordset} = await pool.request().query(`
+	async disconnect() {
+		if (this._pool) {
+			try {
+				await this._pool.close();
+			} finally {
+				this._pool = null;
+			}
+		}
+	}
+
+	async withPool(fn) {
+		// 優先使用既有連線池；沒有則建立臨時連線池
+		if (this._pool && this._pool.connected) {
+			return await fn(this._pool);
+		}
+		const pool = new mssql.ConnectionPool(this.config);
+		await pool.connect();
+		try {
+			return await fn(pool);
+		} finally {
+			await pool.close();
+		}
+	}
+
+	// Schema 相關操作
+	async readSchemas() {
+		return this.withPool(async (pool) => {
+			const { recordset } = await pool.request().query(`
                 SELECT DISTINCT s.name AS schema_name
                 FROM sys.schemas s
                 WHERE s.schema_id IN (SELECT DISTINCT o.schema_id
@@ -30,32 +56,32 @@ class SqlServerAdapter extends DatabaseAdapter {
                                       WHERE o.type IN ('U', 'V', 'P', 'FN', 'TF', 'IF'))
                   AND s.name NOT IN ('dbo', 'sys', 'information_schema', 'guest')
             `);
-            return recordset.map(r => r.schema_name);
-        });
-    }
+			return recordset.map(r => r.schema_name);
+		});
+	}
 
-    async createSchema(schemaName) {
-        return this.withPool(async (pool) => {
-            await pool.request().query(`CREATE SCHEMA [${schemaName}]`);
-        });
-    }
+	async createSchema(schemaName) {
+		return this.withPool(async (pool) => {
+			await pool.request().query(`CREATE SCHEMA [${schemaName}]`);
+		});
+	}
 
-    async checkSchemaExists(schemaName) {
-        return this.withPool(async (pool) => {
-            const {recordset} = await pool
-                .request()
-                .input('schemaName', mssql.NVarChar, schemaName)
-                .query(`SELECT 1
+	async checkSchemaExists(schemaName) {
+		return this.withPool(async (pool) => {
+			const { recordset } = await pool
+				.request()
+				.input('schemaName', mssql.NVarChar, schemaName)
+				.query(`SELECT 1
                         FROM sys.schemas
                         WHERE name = @schemaName`);
-            return recordset.length > 0;
-        });
-    }
+			return recordset.length > 0;
+		});
+	}
 
-    // 物件相關操作
-    async readObjects() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	// 物件相關操作
+	async readObjects() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT o.object_id,
                        RTRIM(o.type) AS type,
                        RTRIM(s.name) AS schema_name,
@@ -69,16 +95,15 @@ class SqlServerAdapter extends DatabaseAdapter {
                 WHERE RTRIM(o.type) IN ('U', 'V', 'P', 'FN', 'TF', 'IF')
                 ORDER BY s.name, o.name
             `;
+			this.debugLog('讀取資料庫物件', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取資料庫物件', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    async readObjectDependencies() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	async readObjectDependencies() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT referencing_id, referenced_id
                 FROM sys.sql_expression_dependencies d
                 WHERE EXISTS (SELECT 1
@@ -90,16 +115,15 @@ class SqlServerAdapter extends DatabaseAdapter {
                               WHERE o.object_id = d.referenced_id
                                 AND o.type IN ('U', 'V', 'P', 'FN', 'TF', 'IF'))
             `;
+			this.debugLog('讀取相依關係', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取相依關係', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    async generateTableCreateStatement(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const sql = `
+	async generateTableCreateStatement(schemaName, tableName) {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT c.name                        AS column_name,
                        t.name                        AS data_type,
                        c.max_length,
@@ -120,66 +144,65 @@ class SqlServerAdapter extends DatabaseAdapter {
                   AND o.name = @tableName
                 ORDER BY c.column_id
             `;
+			this.debugLog(`產生資料表 ${schemaName}.${tableName} CREATE 語句`, sql);
 
-            this.debugLog(`產生資料表 ${schemaName}.${tableName} CREATE 語句`, sql);
+			const { recordset: columns } = await pool.request()
+				.input('schemaName', mssql.NVarChar, schemaName)
+				.input('tableName', mssql.NVarChar, tableName)
+				.query(sql);
 
-            const {recordset: columns} = await pool.request()
-                .input('schemaName', mssql.NVarChar, schemaName)
-                .input('tableName', mssql.NVarChar, tableName)
-                .query(sql);
+			if (columns.length === 0) {
+				console.warn(`警告: 資料表 ${schemaName}.${tableName} 沒有找到欄位定義`);
+				return null;
+			}
 
-            if (columns.length === 0) {
-                console.warn(`警告: 資料表 ${schemaName}.${tableName} 沒有找到欄位定義`);
-                return null;
-            }
+			const columnDefinitions = columns.map(col => {
+				let def = `    [${col.column_name}] [${col.data_type}]`;
 
-            const columnDefinitions = columns.map(col => {
-                let def = `    [${col.column_name}] [${col.data_type}]`;
+				// 處理資料類型長度/精度
+				if (['varchar', 'nvarchar', 'char', 'nchar'].includes(col.data_type)) {
+					if (col.max_length === -1) {
+						def += '(MAX)';
+					} else {
+						const length = col.data_type.startsWith('n') ? col.max_length / 2 : col.max_length;
+						def += `(${length})`;
+					}
+				} else if (['decimal', 'numeric'].includes(col.data_type)) {
+					def += `(${col.precision},${col.scale})`;
+				} else if (['float'].includes(col.data_type) && col.precision !== 53) {
+					def += `(${col.precision})`;
+				} else if (['varbinary', 'binary'].includes(col.data_type) && col.max_length !== -1) {
+					def += col.max_length === -1 ? '(MAX)' : `(${col.max_length})`;
+				}
 
-                // 處理資料類型長度/精度
-                if (['varchar', 'nvarchar', 'char', 'nchar'].includes(col.data_type)) {
-                    if (col.max_length === -1) {
-                        def += '(MAX)';
-                    } else {
-                        const length = col.data_type.startsWith('n') ? col.max_length / 2 : col.max_length;
-                        def += `(${length})`;
-                    }
-                } else if (['decimal', 'numeric'].includes(col.data_type)) {
-                    def += `(${col.precision},${col.scale})`;
-                } else if (['float'].includes(col.data_type) && col.precision !== 53) {
-                    def += `(${col.precision})`;
-                } else if (['varbinary', 'binary'].includes(col.data_type) && col.max_length !== -1) {
-                    def += col.max_length === -1 ? '(MAX)' : `(${col.max_length})`;
-                }
+				if (col.is_identity) {
+					def += ` IDENTITY(${col.seed_value},${col.increment_value})`;
+				}
 
-                if (col.is_identity) {
-                    def += ` IDENTITY(${col.seed_value},${col.increment_value})`;
-                }
+				def += col.is_nullable ? ' NULL' : ' NOT NULL';
 
-                def += col.is_nullable ? ' NULL' : ' NOT NULL';
+				if (col.default_constraint) {
+					def += ` DEFAULT ${col.default_constraint}`;
+				}
 
-                if (col.default_constraint) {
-                    def += ` DEFAULT ${col.default_constraint}`;
-                }
+				return def;
+			});
 
-                return def;
-            });
-
-            const createStatement =
-                `CREATE TABLE [${schemaName}].[${tableName}]
+			const createStatement =
+				`CREATE TABLE [${schemaName}].[${tableName}]
                  (  ` +
-                columnDefinitions.join(',\n') +
-                '\n)';
+				columnDefinitions.join(',\n') +
+				'\n)';
 
-            this.debugLog(`資料表 ${schemaName}.${tableName} CREATE 語句`, createStatement);
-            return createStatement;
-        });
-    }
+			this.debugLog(`資料表 ${schemaName}.${tableName} CREATE 語句`, createStatement);
+			return createStatement;
+		});
+	}
 
-    // 新增：取得表格欄位資訊用於比較
-    async getTableColumns(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const sql = `
+	// 新增：取得表格欄位資訊用於比較
+	async getTableColumns(schemaName, tableName) {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT c.name                        AS column_name,
                        t.name                        AS data_type,
                        c.max_length,
@@ -202,99 +225,98 @@ class SqlServerAdapter extends DatabaseAdapter {
                   AND o.name = @tableName
                 ORDER BY c.column_id
             `;
+			const { recordset } = await pool.request()
+				.input('schemaName', mssql.NVarChar, schemaName)
+				.input('tableName', mssql.NVarChar, tableName)
+				.query(sql);
 
-            const {recordset} = await pool.request()
-                .input('schemaName', mssql.NVarChar, schemaName)
-                .input('tableName', mssql.NVarChar, tableName)
-                .query(sql);
+			return recordset || [];
+		});
+	}
 
-            return recordset || [];
-        });
-    }
+	// 新增：產生欄位的完整定義字串用於比較
+	formatColumnDefinition(col) {
+		let def = `[${col.column_name}] [${col.data_type}]`;
 
-    // 新增：產生欄位的完整定義字串用於比較
-    formatColumnDefinition(col) {
-        let def = `[${col.column_name}] [${col.data_type}]`;
+		// 處理資料類型長度/精度
+		if (['varchar', 'nvarchar', 'char', 'nchar'].includes(col.data_type)) {
+			if (col.max_length === -1) {
+				def += '(MAX)';
+			} else {
+				const length = col.data_type.startsWith('n') ? col.max_length / 2 : col.max_length;
+				def += `(${length})`;
+			}
+		} else if (['decimal', 'numeric'].includes(col.data_type)) {
+			def += `(${col.precision},${col.scale})`;
+		} else if (['float'].includes(col.data_type) && col.precision !== 53) {
+			def += `(${col.precision})`;
+		} else if (['varbinary', 'binary'].includes(col.data_type) && col.max_length !== -1) {
+			def += col.max_length === -1 ? '(MAX)' : `(${col.max_length})`;
+		}
 
-        // 處理資料類型長度/精度
-        if (['varchar', 'nvarchar', 'char', 'nchar'].includes(col.data_type)) {
-            if (col.max_length === -1) {
-                def += '(MAX)';
-            } else {
-                const length = col.data_type.startsWith('n') ? col.max_length / 2 : col.max_length;
-                def += `(${length})`;
-            }
-        } else if (['decimal', 'numeric'].includes(col.data_type)) {
-            def += `(${col.precision},${col.scale})`;
-        } else if (['float'].includes(col.data_type) && col.precision !== 53) {
-            def += `(${col.precision})`;
-        } else if (['varbinary', 'binary'].includes(col.data_type) && col.max_length !== -1) {
-            def += col.max_length === -1 ? '(MAX)' : `(${col.max_length})`;
-        }
+		if (col.is_identity) {
+			def += ` IDENTITY(${col.seed_value},${col.increment_value})`;
+		}
 
-        if (col.is_identity) {
-            def += ` IDENTITY(${col.seed_value},${col.increment_value})`;
-        }
+		def += col.is_nullable ? ' NULL' : ' NOT NULL';
 
-        def += col.is_nullable ? ' NULL' : ' NOT NULL';
+		if (col.default_constraint) {
+			def += ` DEFAULT ${col.default_constraint}`;
+		}
 
-        if (col.default_constraint) {
-            def += ` DEFAULT ${col.default_constraint}`;
-        }
+		return def;
+	}
 
-        return def;
-    }
+	// 新增：產生 ALTER TABLE 語句來添加欄位
+	generateAddColumnStatement(schemaName, tableName, columnDefinition) {
+		return `ALTER TABLE [${schemaName}].[${tableName}] ADD ${columnDefinition}`;
+	}
 
-    // 新增：產生 ALTER TABLE 語句來添加欄位
-    generateAddColumnStatement(schemaName, tableName, columnDefinition) {
-        return `ALTER TABLE [${schemaName}].[${tableName}] ADD ${columnDefinition}`;
-    }
+	// 新增：產生 ALTER TABLE 語句來修改欄位
+	generateAlterColumnStatement(schemaName, tableName, col) {
+		let def = `[${col.data_type}]`;
 
-    // 新增：產生 ALTER TABLE 語句來修改欄位
-    generateAlterColumnStatement(schemaName, tableName, col) {
-        let def = `[${col.data_type}]`;
+		// 處理資料類型長度/精度
+		if (['varchar', 'nvarchar', 'char', 'nchar'].includes(col.data_type)) {
+			if (col.max_length === -1) {
+				def += '(MAX)';
+			} else {
+				const length = col.data_type.startsWith('n') ? col.max_length / 2 : col.max_length;
+				def += `(${length})`;
+			}
+		} else if (['decimal', 'numeric'].includes(col.data_type)) {
+			def += `(${col.precision},${col.scale})`;
+		} else if (['float'].includes(col.data_type) && col.precision !== 53) {
+			def += `(${col.precision})`;
+		} else if (['varbinary', 'binary'].includes(col.data_type) && col.max_length !== -1) {
+			def += col.max_length === -1 ? '(MAX)' : `(${col.max_length})`;
+		}
 
-        // 處理資料類型長度/精度
-        if (['varchar', 'nvarchar', 'char', 'nchar'].includes(col.data_type)) {
-            if (col.max_length === -1) {
-                def += '(MAX)';
-            } else {
-                const length = col.data_type.startsWith('n') ? col.max_length / 2 : col.max_length;
-                def += `(${length})`;
-            }
-        } else if (['decimal', 'numeric'].includes(col.data_type)) {
-            def += `(${col.precision},${col.scale})`;
-        } else if (['float'].includes(col.data_type) && col.precision !== 53) {
-            def += `(${col.precision})`;
-        } else if (['varbinary', 'binary'].includes(col.data_type) && col.max_length !== -1) {
-            def += col.max_length === -1 ? '(MAX)' : `(${col.max_length})`;
-        }
+		def += col.is_nullable ? ' NULL' : ' NOT NULL';
 
-        def += col.is_nullable ? ' NULL' : ' NOT NULL';
+		return `ALTER TABLE [${schemaName}].[${tableName}] ALTER COLUMN [${col.column_name}] ${def}`;
+	}
 
-        return `ALTER TABLE [${schemaName}].[${tableName}] ALTER COLUMN [${col.column_name}] ${def}`;
-    }
+	// 新增：產生 ALTER TABLE 語句來刪除欄位
+	generateDropColumnStatement(schemaName, tableName, columnName) {
+		return `ALTER TABLE [${schemaName}].[${tableName}] DROP COLUMN [${columnName}]`;
+	}
 
-    // 新增：產生 ALTER TABLE 語句來刪除欄位
-    generateDropColumnStatement(schemaName, tableName, columnName) {
-        return `ALTER TABLE [${schemaName}].[${tableName}] DROP COLUMN [${columnName}]`;
-    }
+	// 新增：產生刪除預設約束語句
+	generateDropDefaultConstraintStatement(schemaName, tableName, constraintName) {
+		return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
+	}
 
-    // 新增：產生刪除預設約束語句
-    generateDropDefaultConstraintStatement(schemaName, tableName, constraintName) {
-        return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
-    }
+	// 新增：產生添加預設約束語句
+	generateAddDefaultConstraintStatement(schemaName, tableName, columnName, defaultValue) {
+		const constraintName = `DF_${tableName}_${columnName}`;
+		return `ALTER TABLE [${schemaName}].[${tableName}] ADD CONSTRAINT [${constraintName}] DEFAULT ${defaultValue} FOR [${columnName}]`;
+	}
 
-    // 新增：產生添加預設約束語句
-    generateAddDefaultConstraintStatement(schemaName, tableName, columnName, defaultValue) {
-        const constraintName = `DF_${tableName}_${columnName}`;
-        return `ALTER TABLE [${schemaName}].[${tableName}] ADD CONSTRAINT [${constraintName}] DEFAULT ${defaultValue} FOR [${columnName}]`;
-    }
-
-    // 新增：檢查欄位是否有相依約束或索引
-    async getColumnDependencies(schemaName, tableName, columnName) {
-        return this.withPool(async (pool) => {
-            const sql = `
+	// 新增：檢查欄位是否有相依約束或索引
+	async getColumnDependencies(schemaName, tableName, columnName) {
+		return this.withPool(async (pool) => {
+			const sql = `
                 -- 檢查 Foreign Key 約束
                 SELECT 'FOREIGN_KEY' AS dependency_type, 
                        fk.name AS dependency_name,
@@ -366,21 +388,20 @@ class SqlServerAdapter extends DatabaseAdapter {
                   AND c.name = @columnName
                   AND kc.type = 'UQ'
             `;
+			const { recordset } = await pool.request()
+				.input('schemaName', mssql.NVarChar, schemaName)
+				.input('tableName', mssql.NVarChar, tableName)
+				.input('columnName', mssql.NVarChar, columnName)
+				.query(sql);
 
-            const {recordset} = await pool.request()
-                .input('schemaName', mssql.NVarChar, schemaName)
-                .input('tableName', mssql.NVarChar, tableName)
-                .input('columnName', mssql.NVarChar, columnName)
-                .query(sql);
+			return recordset || [];
+		});
+	}
 
-            return recordset || [];
-        });
-    }
-
-    // 約束相關操作
-    async readPrimaryKeys() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	// 約束相關操作
+	async readPrimaryKeys() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT i.name                                                      AS constraint_name,
                        SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT           AS schema_name,
                        t.name COLLATE DATABASE_DEFAULT                             AS table_name,
@@ -405,16 +426,15 @@ class SqlServerAdapter extends DatabaseAdapter {
 				GROUP BY i.object_id, i.name, t.schema_id, t.name, i.type
 				ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
             `;
+			this.debugLog('讀取主鍵約束', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取主鍵約束', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    async readForeignKeys() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	async readForeignKeys() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT fk.name COLLATE DATABASE_DEFAULT                                     AS constraint_name,
                        SCHEMA_NAME(fk.schema_id) COLLATE DATABASE_DEFAULT                  AS schema_name,
                        tp.name COLLATE DATABASE_DEFAULT                                    AS parent_table,
@@ -435,16 +455,15 @@ class SqlServerAdapter extends DatabaseAdapter {
                 GROUP BY fk.object_id, fk.name, fk.schema_id, tp.name, tr.name, tr.schema_id
                 ORDER BY SCHEMA_NAME(fk.schema_id), tp.name, fk.name
             `;
+			this.debugLog('讀取外鍵約束', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取外鍵約束', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    async readUniqueConstraints() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	async readUniqueConstraints() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT kc.name COLLATE DATABASE_DEFAULT                       AS constraint_name,
                        SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT      AS schema_name,
                        t.name COLLATE DATABASE_DEFAULT                        AS table_name,
@@ -464,17 +483,16 @@ class SqlServerAdapter extends DatabaseAdapter {
                 GROUP BY kc.object_id, kc.name, t.schema_id, t.name
                 ORDER BY SCHEMA_NAME(t.schema_id), t.name, kc.name
             `;
+			this.debugLog('讀取唯一約束', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取唯一約束', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    // 索引相關操作
-    async readIndexes() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	// 索引相關操作
+	async readIndexes() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT i.name COLLATE DATABASE_DEFAULT                      AS index_name,
                        SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT    AS schema_name,
                        t.name COLLATE DATABASE_DEFAULT                      AS table_name,
@@ -501,17 +519,16 @@ class SqlServerAdapter extends DatabaseAdapter {
                 GROUP BY i.object_id, i.name, t.schema_id, t.name, i.type, i.is_unique
                 ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
             `;
+			this.debugLog('讀取索引', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取索引', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    // 清理相關操作 - 讀取現有物件以便刪除
-    async readExistingObjects() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	// 清理相關操作 - 讀取現有物件以便刪除
+	async readExistingObjects() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT RTRIM(o.type) AS type,
                        RTRIM(s.name) AS schema_name,
                        RTRIM(o.name) AS name
@@ -527,16 +544,15 @@ class SqlServerAdapter extends DatabaseAdapter {
                              WHEN 'U' THEN 4
                              END, s.name, o.name
             `;
+			this.debugLog('讀取現有物件', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取現有物件', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    async readExistingForeignKeys() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	async readExistingForeignKeys() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT fk.name COLLATE DATABASE_DEFAULT                    AS constraint_name,
                        SCHEMA_NAME(fk.schema_id) COLLATE DATABASE_DEFAULT AS schema_name,
                        tp.name COLLATE DATABASE_DEFAULT                   AS parent_table
@@ -544,18 +560,17 @@ class SqlServerAdapter extends DatabaseAdapter {
                          INNER JOIN sys.tables tp ON fk.parent_object_id = tp.object_id
                 ORDER BY SCHEMA_NAME(fk.schema_id), tp.name, fk.name
             `;
+			this.debugLog('讀取現有外鍵約束', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取現有外鍵約束', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    async readExistingIndexes() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	async readExistingIndexes() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT i.name COLLATE DATABASE_DEFAULT                   AS index_name,
-                       SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT AS schema_name,
+                       SCHEMA_NAME(t.schema_id) COLLATE DATABASE_DEFAULT AS schema名,
                        t.name COLLATE DATABASE_DEFAULT                   AS table_name
                 FROM sys.indexes i
                          INNER JOIN sys.tables t ON i.object_id = t.object_id
@@ -564,44 +579,40 @@ class SqlServerAdapter extends DatabaseAdapter {
                   AND i.type > 0
                   AND i.name IS NOT NULL
                 ORDER BY SCHEMA_NAME(t.schema_id), t.name, i.name
-            `;
+			`;
+			this.debugLog('讀取現有索引', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取現有索引', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    // 資料相關操作 - 這些是關鍵的缺失方法！
-    async readTables() {
-        return this.withPool(async (pool) => {
-            const sql = `
+	// 資料相關操作
+	async readTables() {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT SCHEMA_NAME(schema_id) AS schema_name,
                        name                   AS table_name
                 FROM sys.tables
                 ORDER BY SCHEMA_NAME(schema_id), name
             `;
+			this.debugLog('讀取資料表清單', sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog('讀取資料表清單', sql);
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
+	async readTableDataCount(schemaName, tableName) {
+		return this.withPool(async (pool) => {
+			const sql = `SELECT COUNT(*) AS total_count FROM [${schemaName}].[${tableName}]`;
+			this.debugLog(`讀取資料表資料筆數: ${schemaName}.${tableName}`, sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset[0].total_count;
+		});
+	}
 
-    async readTableDataCount(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const sql = `SELECT COUNT(*) AS total_count FROM [${schemaName}].[${tableName}]`;
-
-            this.debugLog(`讀取資料表資料筆數: ${schemaName}.${tableName}`, sql);
-
-            const {recordset} = await pool.request().query(sql);
-            return recordset[0].total_count;
-        });
-    }
-
-    async checkIdentityColumn(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const sql = `
+	async checkIdentityColumn(schemaName, tableName) {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT COUNT(*) AS identity_count
                 FROM sys.identity_columns ic
                 INNER JOIN sys.objects o ON ic.object_id = o.object_id
@@ -609,75 +620,72 @@ class SqlServerAdapter extends DatabaseAdapter {
                 WHERE s.name = @schemaName
                   AND o.name = @tableName
             `;
+			this.debugLog(`檢查 IDENTITY 欄位: ${schemaName}.${tableName}`, sql);
 
-            this.debugLog(`檢查 IDENTITY 欄位: ${schemaName}.${tableName}`, sql);
+			const { recordset } = await pool.request()
+				.input('schemaName', mssql.NVarChar, schemaName)
+				.input('tableName', mssql.NVarChar, tableName)
+				.query(sql);
 
-            const {recordset} = await pool.request()
-                .input('schemaName', mssql.NVarChar, schemaName)
-                .input('tableName', mssql.NVarChar, tableName)
-                .query(sql);
+			return recordset[0].identity_count > 0;
+		});
+	}
 
-            return recordset[0].identity_count > 0;
-        });
-    }
+	generateBatchInserts(tableName, rows, hasIdentityColumn, batchSize = 1000) {
+		if (!rows || rows.length === 0) {
+			return [];
+		}
 
-    generateBatchInserts(tableName, rows, hasIdentityColumn, batchSize = 1000) {
-        if (!rows || rows.length === 0) {
-            return [];
-        }
+		const batches = [];
 
-        const batches = [];
+		// 獲取欄位名稱
+		const columns = Object.keys(rows[0]);
+		const columnList = columns.map(col => `[${col}]`).join(', ');
 
-        // 獲取欄位名稱
-        const columns = Object.keys(rows[0]);
-        const columnList = columns.map(col => `[${col}]`).join(', ');
+		for (let i = 0; i < rows.length; i += batchSize) {
+			const batch = rows.slice(i, i + batchSize);
 
-        for (let i = 0; i < rows.length; i += batchSize) {
-            const batch = rows.slice(i, i + batchSize);
+			const valuesList = batch.map(row => {
+				const values = columns.map(col => {
+					const value = row[col];
+					return this.escapeValue(value);
+				}).join(', ');
 
-            const valuesList = batch.map(row => {
-                const values = columns.map(col => {
-                    const value = row[col];
-                    return this.escapeValue(value);
-                }).join(', ');
+				return `(${values})`;
+			}).join(',\n    ');
 
-                return `(${values})`;
-            }).join(',\n    ');
+			let sql = '';
 
-            let sql = '';
+			if (hasIdentityColumn) {
+				sql += `SET IDENTITY_INSERT ${tableName} ON;\n`;
+			}
 
-            if (hasIdentityColumn) {
-                sql += `SET IDENTITY_INSERT ${tableName} ON;\n`;
-            }
-
-            sql += `INSERT INTO ${tableName} (${columnList})
+			sql += `INSERT INTO ${tableName} (${columnList})
 VALUES
     ${valuesList};`;
 
-            if (hasIdentityColumn) {
-                sql += `\nSET IDENTITY_INSERT ${tableName} OFF;`;
-            }
+			if (hasIdentityColumn) {
+				sql += `\nSET IDENTITY_INSERT ${tableName} OFF;`;
+			}
 
-            batches.push(sql);
-        }
+			batches.push(sql);
+		}
 
-        return batches;
-    }
+		return batches;
+	}
 
-    async readTableData(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const sql = `SELECT * FROM [${schemaName}].[${tableName}]`;
+	async readTableData(schemaName, tableName) {
+		return this.withPool(async (pool) => {
+			const sql = `SELECT * FROM [${schemaName}].[${tableName}]`;
+			this.debugLog(`讀取資料表資料: ${schemaName}.${tableName}`, sql);
+			const { recordset } = await pool.request().query(sql);
+			return recordset;
+		});
+	}
 
-            this.debugLog(`讀取資料表資料: ${schemaName}.${tableName}`, sql);
-
-            const {recordset} = await pool.request().query(sql);
-            return recordset;
-        });
-    }
-
-    async readTableColumns(schemaName, tableName) {
-        return this.withPool(async (pool) => {
-            const sql = `
+	async readTableColumns(schemaName, tableName) {
+		return this.withPool(async (pool) => {
+			const sql = `
                 SELECT c.name AS column_name,
                        c.is_identity
                 FROM sys.columns c
@@ -687,120 +695,119 @@ VALUES
                   AND o.name = @tableName
                 ORDER BY c.column_id
             `;
+			this.debugLog(`讀取資料表欄位: ${schemaName}.${tableName}`, sql);
 
-            this.debugLog(`讀取資料表欄位: ${schemaName}.${tableName}`, sql);
+			const { recordset } = await pool.request()
+				.input('schemaName', mssql.NVarChar, schemaName)
+				.input('tableName', mssql.NVarChar, tableName)
+				.query(sql);
 
-            const {recordset} = await pool.request()
-                .input('schemaName', mssql.NVarChar, schemaName)
-                .input('tableName', mssql.NVarChar, tableName)
-                .query(sql);
+			return recordset;
+		});
+	}
 
-            return recordset;
-        });
-    }
+	// DROP 語句產生
+	generateDropObjectStatement(schemaName, objectName, objectType) {
+		const typeMap = {
+			'U': 'TABLE',
+			'V': 'VIEW',
+			'P': 'PROCEDURE',
+			'FN': 'FUNCTION',
+			'TF': 'FUNCTION',
+			'IF': 'FUNCTION'
+		};
 
-    // DROP 語句產生
-    generateDropObjectStatement(schemaName, objectName, objectType) {
-        const typeMap = {
-            'U': 'TABLE',
-            'V': 'VIEW',
-            'P': 'PROCEDURE',
-            'FN': 'FUNCTION',
-            'TF': 'FUNCTION',
-            'IF': 'FUNCTION'
-        };
+		const dropType = typeMap[objectType];
+		if (!dropType) {
+			console.warn(`未知的物件類型: ${objectType}`);
+			return null;
+		}
 
-        const dropType = typeMap[objectType];
-        if (!dropType) {
-            console.warn(`未知的物件類型: ${objectType}`);
-            return null;
-        }
-
-        return `IF EXISTS (SELECT 1 FROM sys.objects WHERE name = '${objectName}' AND schema_id = SCHEMA_ID('${schemaName}'))
+		return `IF EXISTS (SELECT 1 FROM sys.objects WHERE name = '${objectName}' AND schema_id = SCHEMA_ID('${schemaName}'))
     DROP ${dropType} [${schemaName}].[${objectName}]`;
-    }
+	}
 
-    generateDropForeignKeyStatement(schemaName, tableName, constraintName) {
-        return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
-    }
+	generateDropForeignKeyStatement(schemaName, tableName, constraintName) {
+		return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
+	}
 
-    generateDropIndexStatement(schemaName, tableName, indexName) {
-        return `DROP INDEX [${indexName}] ON [${schemaName}].[${tableName}]`;
-    }
+	generateDropIndexStatement(schemaName, tableName, indexName) {
+		return `DROP INDEX [${indexName}] ON [${schemaName}].[${tableName}]`;
+	}
 
-    // 執行 SQL
-    async executeQuery(sql) {
-        return this.withPool(async (pool) => {
-            return await pool.request().query(sql);
-        });
-    }
+	// 執行 SQL
+	async executeQuery(sql) {
+		return this.withPool(async (pool) => {
+			return await pool.request().query(sql);
+		});
+	}
 
-    async executeBatch(sql) {
-        return this.withPool(async (pool) => {
-            return await pool.request().batch(sql);
-        });
-    }
+	async executeBatch(sql) {
+		return this.withPool(async (pool) => {
+			return await pool.request().batch(sql);
+		});
+	}
 
-    // SQL 輔助方法
-    escapeValue(value) {
-        if (value === null || value === undefined) {
-            return 'NULL';
-        }
+	// SQL 輔助方法
+	escapeValue(value) {
+		if (value === null || value === undefined) {
+			return 'NULL';
+		}
 
-        if (typeof value === 'number') {
-            if (isNaN(value)) return 'NULL';
-            if (!isFinite(value)) return 'NULL';
-            return value.toString();
-        }
+		if (typeof value === 'number') {
+			if (isNaN(value)) return 'NULL';
+			if (!isFinite(value)) return 'NULL';
+			return value.toString();
+		}
 
-        if (typeof value === 'boolean') {
-            return value ? '1' : '0';
-        }
+		if (typeof value === 'boolean') {
+			return value ? '1' : '0';
+		}
 
-        if (value instanceof Date) {
-            if (isNaN(value.getTime())) return 'NULL';
-            return `'${value.toISOString()}'`;
-        }
+		if (value instanceof Date) {
+			if (isNaN(value.getTime())) return 'NULL';
+			return `'${value.toISOString()}'`;
+		}
 
-        if (Buffer.isBuffer(value)) {
-            if (value.length === 0) return 'NULL';
-            return `0x${value.toString('hex').toUpperCase()}`;
-        }
+		if (Buffer.isBuffer(value)) {
+			if (value.length === 0) return 'NULL';
+			return `0x${value.toString('hex').toUpperCase()}`;
+		}
 
-        // 字串處理
-        const str = value.toString();
-        if (str.length === 0) {
-            return "''";
-        }
+		// 字串處理
+		const str = value.toString();
+		if (str.length === 0) {
+			return "''";
+		}
 
-        const escapedStr = str.replace(/'/g, "''");
-        return `N'${escapedStr}'`;
-    }
+		const escapedStr = str.replace(/'/g, "''");
+		return `N'${escapedStr}'`;
+	}
 
-    escapeIdentifier(identifier) {
-        if (!identifier) return '[Unknown]';
-        return `[${identifier.toString().replace(/]/g, ']]')}]`;
-    }
+	escapeIdentifier(identifier) {
+		if (!identifier) return '[Unknown]';
+		return `[${identifier.toString().replace(/]/g, ']]')}]`;
+	}
 
-    escapeTableName(tableName) {
-        if (!tableName || typeof tableName !== 'string') {
-            throw new Error('無效的資料表名稱');
-        }
+	escapeTableName(tableName) {
+		if (!tableName || typeof tableName !== 'string') {
+			throw new Error('無效的資料表名稱');
+		}
 
-        // 如果已經是完整的 schema.table 格式
-        if (tableName.includes('.')) {
-            const parts = tableName.split('.');
-            if (parts.length !== 2) {
-                throw new Error(`資料表名稱格式錯誤: ${tableName}`);
-            }
+		// 如果已經是完整的 schema.table 格式
+		if (tableName.includes('.')) {
+			const parts = tableName.split('.');
+			if (parts.length !== 2) {
+				throw new Error(`資料表名稱格式錯誤: ${tableName}`);
+			}
 
-            const [schema, table] = parts;
-            return `${this.escapeIdentifier(schema)}.${this.escapeIdentifier(table)}`;
-        }
+			const [schema, table] = parts;
+			return `${this.escapeIdentifier(schema)}.${this.escapeIdentifier(table)}`;
+		}
 
-        // 如果只有表名，假設使用 dbo schema
-        return `[dbo].${this.escapeIdentifier(tableName)}`;
-    }
+		// 如果只有表名，假設使用 dbo schema
+		return `[dbo].${this.escapeIdentifier(tableName)}`;
+	}
 }
 
 module.exports = SqlServerAdapter;

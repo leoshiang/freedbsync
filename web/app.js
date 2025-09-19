@@ -144,31 +144,53 @@ class FreeDbSyncApp {
         }
     }
 
-    async testConnection(type) {
-        try {
-            const config = this.getConfig(type);
-            const label = type === 'src' ? '來源' : '目標';
+	async testConnection(type) {
+		try {
+			const raw = this.getConfig(type);
+			const label = type === 'src' ? '來源' : '目標';
 
-            this.validateConfig(config, label);
-            this.log(`測試${label}資料庫連線...`, 'info');
+			this.validateConfig(raw, label);
+			this.log(`測試${label}資料庫連線...`, 'info');
 
-            const response = await fetch('/api/test-connection', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ config })
-            });
+			// 1) 轉換成後端/驅動可用的設定
+			const adapterConfig = {
+				type: (raw.type && String(raw.type).trim()) || 'sqlserver',
+				server: raw.server,
+				port: raw.port ? Number(raw.port) : 1433,
+				database: raw.db,          // 將 db 映射為 database
+				user: raw.user,
+				password: raw.pwd          // 將 pwd 映射為 password
+			};
 
-            const result = await response.json();
+			const response = await fetch('/api/test-connection', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/json'
+				},
+				body: JSON.stringify({ config: adapterConfig })
+			});
 
-            if (result.success) {
-                this.log(`${label}資料庫連線成功！`, 'success');
-            } else {
-                this.log(`${label}資料庫連線失敗: ${result.message}`, 'error');
-            }
-        } catch (error) {
-            this.log(`測試連線失敗: ${error.message}`, 'error');
-        }
-    }
+			// 2) 先檢查 Content-Type 再解析，以避免 Unexpected token '<'
+			const contentType = response.headers.get('content-type') || '';
+			if (!contentType.includes('application/json')) {
+				const text = await response.text();
+				throw new Error(`伺服器回應非 JSON（HTTP ${response.status}）。內容片段: ${text.slice(0, 200)}`);
+			}
+
+			const result = await response.json();
+
+			if (response.ok && result.success) {
+				this.log(`${label}資料庫連線成功！`, 'success');
+			} else {
+				const message = result && result.message ? result.message : `HTTP ${response.status}`;
+				this.log(`${label}資料庫連線失敗: ${message}`, 'error');
+			}
+		} catch (error) {
+			this.log(`測試連線失敗: ${error.message}`, 'error');
+		}
+	}
+
 
     async startSync() {
         try {
