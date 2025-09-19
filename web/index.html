@@ -1,18 +1,19 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FreeDbSync - 資料庫同步工具</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>FreeDbSync - 資料庫同步工具</title>
+	<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+	<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+	<style>
         .config-section {
             background: #f8f9fa;
             border-radius: 10px;
             padding: 20px;
             margin-bottom: 20px;
         }
+
         .log-container {
             height: 400px;
             overflow-y: auto;
@@ -22,6 +23,7 @@
             padding: 15px;
             border-radius: 5px;
         }
+
         .sql-preview {
             height: 500px;
             overflow-y: auto;
@@ -31,222 +33,504 @@
             padding: 15px;
             border-radius: 5px;
         }
-        .status-success { color: #28a745; }
-        .status-error { color: #dc3545; }
-        .status-info { color: #17a2b8; }
-        .status-warning { color: #ffc107; }
+
+        .status-success {
+            color: #28a745;
+        }
+
+        .status-error {
+            color: #dc3545;
+        }
+
+        .status-info {
+            color: #17a2b8;
+        }
+
+        .status-warning {
+            color: #ffc107;
+        }
 
         .nav-tabs .nav-link {
             color: #495057;
         }
+
         .nav-tabs .nav-link.active {
             background-color: #007bff;
             border-color: #007bff;
             color: white;
         }
-    </style>
+	</style>
 </head>
 <body>
 <div class="container-fluid">
-    <div class="row">
-        <div class="col-12">
-            <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
-                <div class="container">
+	<div class="row">
+		<div class="col-12">
+			<nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+				<div class="container">
                         <span class="navbar-brand mb-0 h1">
                             <i class="fas fa-database"></i> FreeDbSync 資料庫同步工具
                         </span>
-                    <div class="navbar-nav ms-auto">
+					<div class="navbar-nav ms-auto">
                             <span class="navbar-text" id="connection-status">
                                 <i class="fas fa-circle text-secondary"></i> 未連線
                             </span>
-                    </div>
-                </div>
-            </nav>
-        </div>
-    </div>
+					</div>
+				</div>
+			</nav>
+		</div>
+	</div>
 
-    <div class="container">
-        <!-- 配置區域 -->
-        <div class="row">
-            <div class="col-md-6">
-                <div class="config-section">
-                    <h5><i class="fas fa-server"></i> 來源資料庫</h5>
-                    <div class="row">
-                        <div class="col-md-6">
-                            <label class="form-label">伺服器位址</label>
-                            <input type="text" class="form-control" id="src-server" placeholder="localhost">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">連接埠</label>
-                            <input type="number" class="form-control" id="src-port" placeholder="1433">
-                        </div>
-                    </div>
-                    <div class="row mt-2">
-                        <div class="col-md-6">
-                            <label class="form-label">資料庫名稱</label>
-                            <input type="text" class="form-control" id="src-db" placeholder="database_name">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">使用者名稱</label>
-                            <input type="text" class="form-control" id="src-user" placeholder="sa">
-                        </div>
-                    </div>
-                    <div class="row mt-2">
-                        <div class="col-md-6">
-                            <label class="form-label">密碼</label>
-                            <input type="password" class="form-control" id="src-pwd">
-                        </div>
-                        <div class="col-md-6 d-flex align-items-end">
-                            <button class="btn btn-outline-primary" onclick="testConnection('src')">
-                                <i class="fas fa-plug"></i> 測試連線
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+	<div class="container">
+		<!-- 配置區域 -->
+		<div class="row">
+			<div class="col-md-6">
+				<div class="config-section">
+					<h5><i class="fas fa-server"></i> 來源資料庫</h5>
+					<div class="row">
+						<div class="col-md-6">
+							<label class="form-label">伺服器位址</label>
+							<input type="text" class="form-control" id="src-server" placeholder="localhost">
+						</div>
+						<div class="col-md-6">
+							<label class="form-label">連接埠</label>
+							<input type="number" class="form-control" id="src-port" placeholder="1433">
+						</div>
+					</div>
+					<div class="row mt-2">
+						<div class="col-md-6">
+							<label class="form-label">資料庫名稱</label>
+							<input type="text" class="form-control" id="src-db" placeholder="database_name">
+						</div>
+						<div class="col-md-6">
+							<label class="form-label">使用者名稱</label>
+							<input type="text" class="form-control" id="src-user" placeholder="sa">
+						</div>
+					</div>
+					<div class="row mt-2">
+						<div class="col-md-6">
+							<label class="form-label">密碼</label>
+							<input type="password" class="form-control" id="src-pwd">
+						</div>
+						<div class="col-md-6 d-flex align-items-end">
+							<button class="btn btn-outline-primary" onclick="testConnection('src')">
+								<i class="fas fa-plug"></i> 測試連線
+							</button>
+						</div>
+					</div>
+				</div>
+			</div>
 
-            <div class="col-md-6">
-                <div class="config-section">
-                    <h5><i class="fas fa-server"></i> 目標資料庫</h5>
-                    <div class="row">
-                        <div class="col-md-6">
-                            <label class="form-label">伺服器位址</label>
-                            <input type="text" class="form-control" id="dst-server" placeholder="localhost">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">連接埠</label>
-                            <input type="number" class="form-control" id="dst-port" placeholder="1433">
-                        </div>
-                    </div>
-                    <div class="row mt-2">
-                        <div class="col-md-6">
-                            <label class="form-label">資料庫名稱</label>
-                            <input type="text" class="form-control" id="dst-db" placeholder="database_name">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">使用者名稱</label>
-                            <input type="text" class="form-control" id="dst-user" placeholder="sa">
-                        </div>
-                    </div>
-                    <div class="row mt-2">
-                        <div class="col-md-6">
-                            <label class="form-label">密碼</label>
-                            <input type="password" class="form-control" id="dst-pwd">
-                        </div>
-                        <div class="col-md-6 d-flex align-items-end">
-                            <button class="btn btn-outline-primary" onclick="testConnection('dst')">
-                                <i class="fas fa-plug"></i> 測試連線
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+			<div class="col-md-6">
+				<div class="config-section">
+					<h5><i class="fas fa-server"></i> 目標資料庫</h5>
+					<div class="row">
+						<div class="col-md-6">
+							<label class="form-label">伺服器位址</label>
+							<input type="text" class="form-control" id="dst-server" placeholder="localhost">
+						</div>
+						<div class="col-md-6">
+							<label class="form-label">連接埠</label>
+							<input type="number" class="form-control" id="dst-port" placeholder="1433">
+						</div>
+					</div>
+					<div class="row mt-2">
+						<div class="col-md-6">
+							<label class="form-label">資料庫名稱</label>
+							<input type="text" class="form-control" id="dst-db" placeholder="database_name">
+						</div>
+						<div class="col-md-6">
+							<label class="form-label">使用者名稱</label>
+							<input type="text" class="form-control" id="dst-user" placeholder="sa">
+						</div>
+					</div>
+					<div class="row mt-2">
+						<div class="col-md-6">
+							<label class="form-label">密碼</label>
+							<input type="password" class="form-control" id="dst-pwd">
+						</div>
+						<div class="col-md-6 d-flex align-items-end">
+							<button class="btn btn-outline-primary" onclick="testConnection('dst')">
+								<i class="fas fa-plug"></i> 測試連線
+							</button>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
 
-        <!-- 選項區域 -->
-        <div class="row">
-            <div class="col-12">
-                <div class="config-section">
-                    <h5><i class="fas fa-cog"></i> 執行選項</h5>
-                    <div class="row">
-                        <div class="col-md-3">
-                            <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="compare-only">
-                                <label class="form-check-label" for="compare-only">比較模式</label>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="debug-mode">
-                                <label class="form-check-label" for="debug-mode">除錯模式</label>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+		<!-- 選項區域 -->
+		<div class="row">
+			<div class="col-12">
+				<div class="config-section">
+					<h5><i class="fas fa-cog"></i> 執行選項</h5>
+					<div class="row">
+						<div class="col-md-3">
+							<div class="form-check form-switch">
+								<input class="form-check-input" type="checkbox" id="compare-only">
+								<label class="form-check-label" for="compare-only">比較模式</label>
+							</div>
+						</div>
+						<div class="col-md-3">
+							<div class="form-check form-switch">
+								<input class="form-check-input" type="checkbox" id="debug-mode">
+								<label class="form-check-label" for="debug-mode">除錯模式</label>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
 
-        <!-- 操作按鈕 -->
-        <div class="row">
-            <div class="col-12 text-center">
-                <div class="btn-group me-3" role="group">
-                    <button class="btn btn-success btn-lg" onclick="startSync()">
-                        <i class="fas fa-sync-alt"></i> 開始同步
-                    </button>
-                    <button class="btn btn-info btn-lg" onclick="generatePreview()">
-                        <i class="fas fa-eye"></i> 產生預覽
-                    </button>
-                </div>
-                <div class="btn-group" role="group">
-                    <button class="btn btn-secondary" onclick="saveConfig()">
-                        <i class="fas fa-save"></i> 儲存設定
-                    </button>
-                    <button class="btn btn-outline-secondary" onclick="loadConfig()">
-                        <i class="fas fa-upload"></i> 載入設定
-                    </button>
-                    <button class="btn btn-outline-danger" onclick="clearConfig()">
-                        <i class="fas fa-trash"></i> 清除設定
-                    </button>
-                </div>
-            </div>
-        </div>
+		<!-- 操作按鈕 -->
+		<div class="row">
+			<div class="col-12 text-center">
+				<div class="btn-group me-3" role="group">
+					<button class="btn btn-success btn-lg" onclick="startSync()">
+						<i class="fas fa-sync-alt"></i> 開始同步
+					</button>
+					<button class="btn btn-info btn-lg" onclick="generatePreview()">
+						<i class="fas fa-eye"></i> 產生預覽
+					</button>
+				</div>
+				<div class="btn-group" role="group">
+					<button class="btn btn-secondary" onclick="saveConfig()">
+						<i class="fas fa-save"></i> 儲存設定
+					</button>
+					<button class="btn btn-outline-secondary" onclick="loadConfig()">
+						<i class="fas fa-upload"></i> 載入設定
+					</button>
+					<button class="btn btn-outline-danger" onclick="clearConfig()">
+						<i class="fas fa-trash"></i> 清除設定
+					</button>
+				</div>
+			</div>
+		</div>
 
-        <!-- 進度條 -->
-        <div class="row mt-4">
-            <div class="col-12">
-                <div class="progress" style="height: 25px;">
-                    <div class="progress-bar" id="progress-bar" role="progressbar" style="width: 0%">0%</div>
-                </div>
-            </div>
-        </div>
+		<!-- 進度條 -->
+		<div class="row mt-4">
+			<div class="col-12">
+				<div class="progress" style="height: 25px;">
+					<div class="progress-bar" id="progress-bar" role="progressbar" style="width: 0%">0%</div>
+				</div>
+			</div>
+		</div>
 
-        <!-- 標籤區域 -->
-        <div class="row mt-4">
-            <div class="col-12">
-                <ul class="nav nav-tabs" id="resultTabs" role="tablist">
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-panel" type="button" role="tab">
-                            <i class="fas fa-terminal"></i> 執行紀錄
-                        </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="schema-tab" data-bs-toggle="tab" data-bs-target="#schema-panel" type="button" role="tab">
-                            <i class="fas fa-database"></i> Schema SQL
-                        </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="data-tab" data-bs-toggle="tab" data-bs-target="#data-panel" type="button" role="tab">
-                            <i class="fas fa-table"></i> Data SQL
-                        </button>
-                    </li>
-                </ul>
-                <div class="tab-content" id="resultTabsContent">
-                    <div class="tab-pane fade show active" id="log-panel" role="tabpanel">
-                        <div class="log-container" id="log-container">
-                            <div class="status-info">歡迎使用 FreeDbSync 網頁介面!</div>
-                            <div class="status-info">請設定來源和目標資料庫連線資訊</div>
-                            <div class="status-info">您的設定會自動儲存在瀏覽器的 localStorage 中</div>
-                        </div>
-                    </div>
-                    <div class="tab-pane fade" id="schema-panel" role="tabpanel">
-                        <div class="sql-preview" id="schema-preview">
-                            <div class="text-muted">Schema SQL 將顯示在這裡...</div>
-                        </div>
-                    </div>
-                    <div class="tab-pane fade" id="data-panel" role="tabpanel">
-                        <div class="sql-preview" id="data-preview">
-                            <div class="text-muted">Data SQL 將顯示在這裡...</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+		<!-- 標籤區域 -->
+		<div class="row mt-4">
+			<div class="col-12">
+				<ul class="nav nav-tabs" id="resultTabs" role="tablist">
+					<li class="nav-item" role="presentation">
+						<button class="nav-link active" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-panel"
+						        type="button" role="tab">
+							<i class="fas fa-terminal"></i> 執行紀錄
+						</button>
+					</li>
+					<li class="nav-item" role="presentation">
+						<button class="nav-link" id="schema-tab" data-bs-toggle="tab" data-bs-target="#schema-panel"
+						        type="button" role="tab">
+							<i class="fas fa-database"></i> Schema SQL
+						</button>
+					</li>
+					<li class="nav-item" role="presentation">
+						<button class="nav-link" id="data-tab" data-bs-toggle="tab" data-bs-target="#data-panel"
+						        type="button" role="tab">
+							<i class="fas fa-table"></i> Data SQL
+						</button>
+					</li>
+				</ul>
+				<div class="tab-content" id="resultTabsContent">
+					<div class="tab-pane fade show active" id="log-panel" role="tabpanel">
+						<div class="log-container" id="log-container">
+							<div class="status-info">歡迎使用 FreeDbSync 網頁介面!</div>
+							<div class="status-info">請設定來源和目標資料庫連線資訊</div>
+							<div class="status-info">您的設定會自動儲存在瀏覽器的 localStorage 中</div>
+						</div>
+					</div>
+					<div class="tab-pane fade" id="schema-panel" role="tabpanel">
+						<div class="sql-preview" id="schema-preview">
+							<div class="text-muted">Schema SQL 將顯示在這裡...</div>
+						</div>
+					</div>
+					<div class="tab-pane fade" id="data-panel" role="tabpanel">
+						<div class="sql-preview" id="data-preview">
+							<div class="text-muted">Data SQL 將顯示在這裡...</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
 <!-- 更新 Socket.IO 客戶端版本以符合伺服器端版本 -->
+<!-- 更新 Socket.IO 客戶端版本以符合伺服器端版本 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.js"></script>
 <script src="app.js"></script>
+<script>
+	/* 安全儲存設定：AES-GCM + PBKDF2
+	   儲存格式(localStorage key: 'fds_config_secure_v1'):
+	   {
+		 ver: 1,
+		 algo: "AES-GCM",
+		 kdf: "PBKDF2-SHA-256",
+		 iter: 100000,
+		 len: <plaintext UTF-8 byte length>,
+		 salt: <base64>,
+		 iv: <base64>,
+		 ct: <base64>
+	   }
+	*/
+
+	(function () {
+		const STORAGE_KEY = 'fds_config_secure_v1';
+		const ITERATIONS = 100000;
+
+		const enc = new TextEncoder();
+		const dec = new TextDecoder();
+
+		function logInfo(msg) {
+			try {
+				const box = document.getElementById('log-container');
+				if (!box) return;
+				const div = document.createElement('div');
+				div.className = 'status-info';
+				div.textContent = msg;
+				box.appendChild(div);
+				box.scrollTop = box.scrollHeight;
+			} catch (_) {
+			}
+		}
+
+		function logError(msg) {
+			try {
+				const box = document.getElementById('log-container');
+				if (!box) return;
+				const div = document.createElement('div');
+				div.className = 'status-error';
+				div.textContent = msg;
+				box.appendChild(div);
+				box.scrollTop = box.scrollHeight;
+			} catch (_) {
+			}
+		}
+
+		function getConfigFromUI() {
+			return {
+				src: {
+					server: document.getElementById('src-server')?.value || '',
+					port: document.getElementById('src-port')?.value || '',
+					db: document.getElementById('src-db')?.value || '',
+					user: document.getElementById('src-user')?.value || '',
+					pwd: document.getElementById('src-pwd')?.value || ''
+				},
+				dst: {
+					server: document.getElementById('dst-server')?.value || '',
+					port: document.getElementById('dst-port')?.value || '',
+					db: document.getElementById('dst-db')?.value || '',
+					user: document.getElementById('dst-user')?.value || '',
+					pwd: document.getElementById('dst-pwd')?.value || ''
+				},
+				options: {
+					compareOnly: !!document.getElementById('compare-only')?.checked,
+					debugMode: !!document.getElementById('debug-mode')?.checked
+				}
+			};
+		}
+
+		function setConfigToUI(cfg) {
+			if (!cfg) return;
+			if (cfg.src) {
+				if (document.getElementById('src-server')) document.getElementById('src-server').value = cfg.src.server || '';
+				if (document.getElementById('src-port')) document.getElementById('src-port').value = cfg.src.port || '';
+				if (document.getElementById('src-db')) document.getElementById('src-db').value = cfg.src.db || '';
+				if (document.getElementById('src-user')) document.getElementById('src-user').value = cfg.src.user || '';
+				if (document.getElementById('src-pwd')) document.getElementById('src-pwd').value = cfg.src.pwd || '';
+			}
+			if (cfg.dst) {
+				if (document.getElementById('dst-server')) document.getElementById('dst-server').value = cfg.dst.server || '';
+				if (document.getElementById('dst-port')) document.getElementById('dst-port').value = cfg.dst.port || '';
+				if (document.getElementById('dst-db')) document.getElementById('dst-db').value = cfg.dst.db || '';
+				if (document.getElementById('dst-user')) document.getElementById('dst-user').value = cfg.dst.user || '';
+				if (document.getElementById('dst-pwd')) document.getElementById('dst-pwd').value = cfg.dst.pwd || '';
+			}
+			if (cfg.options) {
+				if (document.getElementById('compare-only')) document.getElementById('compare-only').checked = !!cfg.options.compareOnly;
+				if (document.getElementById('debug-mode')) document.getElementById('debug-mode').checked = !!cfg.options.debugMode;
+			}
+		}
+
+		function toB64(bytes) {
+			// Uint8Array -> base64
+			let str = '';
+			bytes = new Uint8Array(bytes);
+			for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
+			return btoa(str);
+		}
+
+		function fromB64(b64) {
+			// base64 -> Uint8Array
+			const binStr = atob(b64);
+			const bytes = new Uint8Array(binStr.length);
+			for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+			return bytes;
+		}
+
+		async function deriveKey(password, salt) {
+			const keyMaterial = await crypto.subtle.importKey(
+				'raw',
+				enc.encode(password),
+				{name: 'PBKDF2'},
+				false,
+				['deriveKey']
+			);
+			return crypto.subtle.deriveKey(
+				{
+					name: 'PBKDF2',
+					salt,
+					iterations: ITERATIONS,
+					hash: 'SHA-256'
+				},
+				keyMaterial,
+				{name: 'AES-GCM', length: 256},
+				false,
+				['encrypt', 'decrypt']
+			);
+		}
+
+		async function encryptWithPassword(plaintextBytes, password) {
+			const salt = crypto.getRandomValues(new Uint8Array(16));
+			const iv = crypto.getRandomValues(new Uint8Array(12));
+			const key = await deriveKey(password, salt);
+			const ct = await crypto.subtle.encrypt(
+				{name: 'AES-GCM', iv},
+				key,
+				plaintextBytes
+			);
+			return {salt, iv, ct: new Uint8Array(ct)};
+		}
+
+		async function decryptWithPassword(ctBytes, password, salt, iv) {
+			const key = await deriveKey(password, salt);
+			const pt = await crypto.subtle.decrypt(
+				{name: 'AES-GCM', iv},
+				key,
+				ctBytes
+			);
+			return new Uint8Array(pt);
+		}
+
+		// 覆寫或提供 saveConfig
+		window.saveConfig = async function saveConfig() {
+			try {
+				const password = prompt('請輸入密碼以加密並儲存設定：');
+				if (password === null) {
+					logInfo('已取消儲存。');
+					return;
+				}
+				if (!password) {
+					alert('密碼不可為空。');
+					return;
+				}
+
+				const cfg = getConfigFromUI();
+				const json = JSON.stringify(cfg);
+				const pt = enc.encode(json);
+				const originalLen = pt.length;
+
+				const {salt, iv, ct} = await encryptWithPassword(pt, password);
+
+				const payload = {
+					ver: 1,
+					algo: 'AES-GCM',
+					kdf: 'PBKDF2-SHA-256',
+					iter: ITERATIONS,
+					len: originalLen,
+					salt: toB64(salt),
+					iv: toB64(iv),
+					ct: toB64(ct)
+				};
+
+				localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+				logInfo('設定已使用 AES 加密並儲存至 localStorage。');
+				alert('儲存成功。');
+			} catch (err) {
+				console.error(err);
+				logError('儲存失敗：' + (err?.message || String(err)));
+				alert('儲存失敗，請查看日誌。');
+			}
+		};
+
+		// 覆寫或提供 loadConfig
+		window.loadConfig = async function loadConfig() {
+			try {
+				const raw = localStorage.getItem(STORAGE_KEY);
+				if (!raw) {
+					alert('查無已儲存的設定。');
+					return;
+				}
+				const payload = JSON.parse(raw);
+				if (!payload || payload.ver !== 1) {
+					alert('設定格式不支援或已損毀。');
+					return;
+				}
+
+				const password = prompt('請輸入密碼以解密設定：');
+				if (password === null) {
+					logInfo('已取消載入。');
+					return;
+				}
+				if (!password) {
+					alert('密碼不可為空。');
+					return;
+				}
+
+				const salt = fromB64(payload.salt);
+				const iv = fromB64(payload.iv);
+				const ct = fromB64(payload.ct);
+
+				let ptBytes;
+				try {
+					ptBytes = await decryptWithPassword(ct, password, salt, iv);
+				} catch (e) {
+					logError('解密失敗，可能是密碼錯誤或資料已損毀。');
+					alert('解密失敗。');
+					return;
+				}
+
+				// 驗證長度
+				const actualLen = ptBytes.length;
+				if (actualLen !== payload.len) {
+					logError(`驗證失敗：解密後長度(${actualLen})與紀錄長度(${payload.len})不符。`);
+					alert('載入失敗：資料驗證不通過。');
+					return;
+				}
+
+				const json = dec.decode(ptBytes);
+				const cfg = JSON.parse(json);
+				setConfigToUI(cfg);
+				logInfo('設定已解密並載入。');
+				alert('載入成功。');
+			} catch (err) {
+				console.error(err);
+				logError('載入失敗：' + (err?.message || String(err)));
+				alert('載入失敗，請查看日誌。');
+			}
+		};
+
+		// 覆寫或提供 clearConfig
+		window.clearConfig = function clearConfig() {
+			try {
+				localStorage.removeItem(STORAGE_KEY);
+				logInfo('已從 localStorage 清除加密設定。');
+				alert('清除完成。');
+			} catch (err) {
+				console.error(err);
+				logError('清除失敗：' + (err?.message || String(err)));
+				alert('清除失敗，請查看日誌。');
+			}
+		};
+	})();
+</script>
 </body>
 </html>
