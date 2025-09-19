@@ -1,5 +1,7 @@
 const DatabaseAdapter = require('./DatabaseAdapter');
 const mssql = require('mssql');
+const { escapeIdentifier, escapeValue } = require('../Utils/SqlEscape');
+const SqlBuilder = require('../Utils/SqlBuilder');
 
 /**
  * SQL Server 資料庫適配器
@@ -10,12 +12,57 @@ class SqlServerAdapter extends DatabaseAdapter {
     }
 
     async withPool(fn) {
-        const pool = new mssql.ConnectionPool(this.config);
-        await pool.connect();
-        try {
-            return await fn(pool);
-        } finally {
-            await pool.close();
+        // Merge pool/timeouts with sensible defaults without breaking existing configs
+        const cfg = { ...this.config };
+        cfg.pool = Object.assign({ max: 10, min: 0, idleTimeoutMillis: 30000 }, cfg.pool || {});
+        if (cfg.connectionTimeout == null) cfg.connectionTimeout = 15000; // ms
+        if (cfg.requestTimeout == null) cfg.requestTimeout = 300000; // ms (5 min)
+
+        // Retry options (exponential backoff with jitter)
+        const retryOpts = (cfg.options && cfg.options.retry) || {};
+        const maxRetries = Number.isInteger(retryOpts.max) ? retryOpts.max : 3;
+        const baseDelayMs = Number.isInteger(retryOpts.baseDelayMs) ? retryOpts.baseDelayMs : 200;
+        const factor = Number.isFinite(retryOpts.factor) ? retryOpts.factor : 2;
+        const maxDelayMs = Number.isInteger(retryOpts.maxDelayMs) ? retryOpts.maxDelayMs : 10000;
+
+        const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+        const isTransient = (err) => {
+            if (!err) return false;
+            const transientCodes = new Set(['ETIMEOUT', 'ESOCKET', 'ECONNRESET', 'ELOGIN', 'ENOTOPEN', 'EALREADYCONNECTED', 'EALREADYCONNECTING']);
+            if (err.code && transientCodes.has(err.code)) return true;
+            if (typeof err.number === 'number') {
+                // Common transient SQL error numbers (incl. Azure SQL)
+                const transientNumbers = [1205, 4060, 10928, 10929, 40197, 40501, 40613];
+                if (transientNumbers.includes(err.number)) return true;
+            }
+            const msg = (err.message || '').toLowerCase();
+            if (msg.includes('deadlock')) return true;
+            if (msg.includes('timeout')) return true;
+            if (msg.includes('connection') && msg.includes('closed')) return true;
+            return false;
+        };
+
+        let attempt = 0;
+        while (true) {
+            attempt += 1;
+            const pool = new mssql.ConnectionPool(cfg);
+            try {
+                await pool.connect();
+                const result = await fn(pool);
+                return result;
+            } catch (err) {
+                if (attempt <= maxRetries && isTransient(err)) {
+                    const backoff = Math.min(maxDelayMs, baseDelayMs * Math.pow(factor, attempt - 1));
+                    const jitter = Math.floor(Math.random() * baseDelayMs);
+                    const delay = backoff + jitter;
+                    this.debugLog(`暫時性錯誤（第 ${attempt} 次重試前等待 ${delay}ms）: ${err.message}`);
+                    await sleep(delay);
+                    continue; // retry
+                }
+                throw err;
+            } finally {
+                try { await pool.close(); } catch (_) { /* ignore close errors */ }
+            }
         }
     }
 
@@ -625,43 +672,18 @@ class SqlServerAdapter extends DatabaseAdapter {
         if (!rows || rows.length === 0) {
             return [];
         }
-
-        const batches = [];
-
-        // 獲取欄位名稱
-        const columns = Object.keys(rows[0]);
-        const columnList = columns.map(col => `[${col}]`).join(', ');
-
-        for (let i = 0; i < rows.length; i += batchSize) {
-            const batch = rows.slice(i, i + batchSize);
-
-            const valuesList = batch.map(row => {
-                const values = columns.map(col => {
-                    const value = row[col];
-                    return this.escapeValue(value);
-                }).join(', ');
-
-                return `(${values})`;
-            }).join(',\n    ');
-
-            let sql = '';
-
-            if (hasIdentityColumn) {
-                sql += `SET IDENTITY_INSERT ${tableName} ON;\n`;
+        // 解析 tableName 為 schema 與 table（允許 [schema].[table] 或 schema.table 或僅表名）
+        let schema = 'dbo';
+        let table = tableName;
+        if (typeof tableName === 'string' && tableName.includes('.')) {
+            const parts = tableName.split('.');
+            if (parts.length === 2) {
+                const strip = (s) => s.replace(/^\[/, '').replace(/\]$/, '');
+                schema = strip(parts[0]);
+                table = strip(parts[1]);
             }
-
-            sql += `INSERT INTO ${tableName} (${columnList})
-VALUES
-    ${valuesList};`;
-
-            if (hasIdentityColumn) {
-                sql += `\nSET IDENTITY_INSERT ${tableName} OFF;`;
-            }
-
-            batches.push(sql);
         }
-
-        return batches;
+        return SqlBuilder.batchInsert({ schema, table, rows, hasIdentity: !!hasIdentityColumn, batchSize });
     }
 
     async readTableData(schemaName, tableName) {
@@ -672,6 +694,44 @@ VALUES
 
             const {recordset} = await pool.request().query(sql);
             return recordset;
+        });
+    }
+
+    /**
+     * 以分頁方式讀取資料，避免一次載入到記憶體。
+     * 若提供 onPage 回呼，將於每頁資料到達時呼叫；否則回傳全部資料（仍可能占用記憶體）。
+     * @param {string} schemaName
+     * @param {string} tableName
+     * @param {number} pageSize
+     * @param {(rows: any[], pageIndex: number) => Promise<void>|void} [onPage]
+     * @returns {Promise<any[]>|Promise<void>}
+     */
+    async readTableDataPaged(schemaName, tableName, pageSize = 10000, onPage) {
+        const orderBy = 'ORDER BY (SELECT NULL)'; // 避免要求特定索引/主鍵
+        if (onPage && typeof onPage !== 'function') {
+            throw new Error('onPage 必須為函式');
+        }
+        return this.withPool(async (pool) => {
+            let offset = 0;
+            let pageIndex = 0;
+            const all = [];
+            while (true) {
+                const sql = `SELECT * FROM [${schemaName}].[${tableName}] ${orderBy} OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;`;
+                this.debugLog(`分頁讀取資料: ${schemaName}.${tableName} offset=${offset} size=${pageSize}`, sql);
+                const req = pool.request()
+                    .input('offset', mssql.Int, offset)
+                    .input('limit', mssql.Int, pageSize);
+                const { recordset } = await req.query(sql);
+                if (!recordset || recordset.length === 0) break;
+                if (onPage) {
+                    await onPage(recordset, pageIndex);
+                } else {
+                    all.push(...recordset);
+                }
+                offset += recordset.length;
+                pageIndex += 1;
+            }
+            if (!onPage) return all;
         });
     }
 
@@ -701,31 +761,20 @@ VALUES
 
     // DROP 語句產生
     generateDropObjectStatement(schemaName, objectName, objectType) {
-        const typeMap = {
-            'U': 'TABLE',
-            'V': 'VIEW',
-            'P': 'PROCEDURE',
-            'FN': 'FUNCTION',
-            'TF': 'FUNCTION',
-            'IF': 'FUNCTION'
-        };
-
-        const dropType = typeMap[objectType];
-        if (!dropType) {
+        const sql = SqlBuilder.dropObject({ schema: schemaName, name: objectName, objectType });
+        if (!sql) {
             console.warn(`未知的物件類型: ${objectType}`);
             return null;
         }
-
-        return `IF EXISTS (SELECT 1 FROM sys.objects WHERE name = '${objectName}' AND schema_id = SCHEMA_ID('${schemaName}'))
-    DROP ${dropType} [${schemaName}].[${objectName}]`;
+        return sql;
     }
 
     generateDropForeignKeyStatement(schemaName, tableName, constraintName) {
-        return `ALTER TABLE [${schemaName}].[${tableName}] DROP CONSTRAINT [${constraintName}]`;
+        return SqlBuilder.dropForeignKey({ schema: schemaName, table: tableName, constraint: constraintName });
     }
 
     generateDropIndexStatement(schemaName, tableName, indexName) {
-        return `DROP INDEX [${indexName}] ON [${schemaName}].[${tableName}]`;
+        return SqlBuilder.dropIndex({ schema: schemaName, table: tableName, index: indexName });
     }
 
     // 執行 SQL
@@ -743,43 +792,11 @@ VALUES
 
     // SQL 輔助方法
     escapeValue(value) {
-        if (value === null || value === undefined) {
-            return 'NULL';
-        }
-
-        if (typeof value === 'number') {
-            if (isNaN(value)) return 'NULL';
-            if (!isFinite(value)) return 'NULL';
-            return value.toString();
-        }
-
-        if (typeof value === 'boolean') {
-            return value ? '1' : '0';
-        }
-
-        if (value instanceof Date) {
-            if (isNaN(value.getTime())) return 'NULL';
-            return `'${value.toISOString()}'`;
-        }
-
-        if (Buffer.isBuffer(value)) {
-            if (value.length === 0) return 'NULL';
-            return `0x${value.toString('hex').toUpperCase()}`;
-        }
-
-        // 字串處理
-        const str = value.toString();
-        if (str.length === 0) {
-            return "''";
-        }
-
-        const escapedStr = str.replace(/'/g, "''");
-        return `N'${escapedStr}'`;
+        return escapeValue(value);
     }
 
     escapeIdentifier(identifier) {
-        if (!identifier) return '[Unknown]';
-        return `[${identifier.toString().replace(/]/g, ']]')}]`;
+        return escapeIdentifier(identifier);
     }
 
     escapeTableName(tableName) {

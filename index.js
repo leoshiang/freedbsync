@@ -17,8 +17,12 @@ const compareOnly = !!argv['compare-only'];
 const showHelp = !!argv['help'] || !!argv['h'];
 const showVersion = !!argv['version'] || !!argv['v'];
 
-// 全域 debug 設定
-global.DEBUG_MODE = isDebug;
+// 預先準備 Logger（目前不影響既有行為，後續可逐步導入）
+const Logger = require('./Utils/Logger');
+const logger = new Logger(isDebug ? 'debug' : 'info');
+
+// 移除全域 debug 設定，改以參數傳遞與 Logger（見 Utils/Logger）
+// global.DEBUG_MODE 已移除，請使用 isDebug 或注入式 Logger
 
 function showVersionInfo() {
     const packageJson = require('./package.json');

@@ -10,7 +10,7 @@
     "start": "node index.js",
     "preview": "node index.js --dry-run",
     "debug": "node index.js --debug",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node tests\\run-tests.js",
     "postinstall": "echo \"✅ FreeDbSync 安裝完成！\\n使用方法:\\n  npx freedbsync --help\\n  或者全域安裝: npm install -g . && freedbsync --help\"",
     "link": "npm link",
     "unlink": "npm unlink -g freedbsync"
